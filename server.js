@@ -100,59 +100,56 @@ app.get('/nghe', (req, res) => {
                 };
 
                 ws.onmessage = (event) => {
-                    if (event.data.byteLength === 0) return;
+if (event.data.byteLength === 0) return;
 
-                    // 1. Phân tích số liệu gói tin
-                    packetCount++;
-                    let now = Date.now();
-                    let delta = now - lastPacketTime;
-                    lastPacketTime = now;
-                    
-                    let rawData = new Int32Array(event.data); 
-                    let samplesCount = rawData.length;
-                    sampleRateCounter += samplesCount;
+    packetCount++;
+    let now = Date.now();
+    let delta = now - lastPacketTime;
+    lastPacketTime = now;
+    
+    // 1. Sửa dòng này: Đổi từ Int16 sang Int32
+    let int32Data = new Int32Array(event.data); 
+    let samplesCount = int32Data.length;
+    sampleRateCounter += samplesCount;
 
-                    // Tính toán Biên độ đỉnh (Peak Amplitude) để đo độ rõ của giọng nói
-                    let maxVal = 0;
-                    for (let i = 0; i < samplesCount; i++) {
-                        let absVal = Math.abs(int16Array[i]);
-                        if (absVal > maxVal) maxVal = absVal;
-                    }
-                    let peakPercentage = ((maxVal / 32768) * 100).toFixed(1);
+    // 2. Phần tính Biên độ đỉnh: Sửa int16Array thành int32Data và 32768 thành 2147483648
+    let maxVal = 0;
+    for (let i = 0; i < samplesCount; i++) {
+        let absVal = Math.abs(int32Data[i]);
+        if (absVal > maxVal) maxVal = absVal;
+    }
+    let peakPercentage = ((maxVal / 2147483648.0) * 100).toFixed(1);
 
-                    // Cập nhật số liệu lên màn hình sau mỗi gói
-                    valPackets.innerText = packetCount;
-                    valPeak.innerText = peakPercentage + "%";
-                    valLatency.innerText = delta + "ms";
+    valPackets.innerText = packetCount;
+    valPeak.innerText = peakPercentage + "%";
+    valLatency.innerText = delta + "ms";
 
-                    // Cập nhật tần số mẫu thực tế (mỗi giây tính toán lại 1 lần)
-                    if (now - lastSecTime >= 1000) {
-                        valSample.innerText = sampleRateCounter + " Hz";
-                        sampleRateCounter = 0;
-                        lastSecTime = now;
-                    }
+    if (now - lastSecTime >= 1000) {
+        valSample.innerText = sampleRateCounter + " Hz";
+        sampleRateCounter = 0;
+        lastSecTime = now;
+    }
 
-                    // 2. Xử lý giải mã và đẩy vào mạch phát âm thanh chống giật
-                    let audioBuffer = audioCtx.createBuffer(1, samplesCount, 16000);
-                    let channelData = audioBuffer.getChannelData(0);
-                    
-                    for (let i = 0; i < samplesCount; i++) {
-                        channelData[i] = int16Array[i] / 32768.0;
-                    }
-                    
-                    let source = audioCtx.createBufferSource();
-                    source.buffer = audioBuffer;
-                    source.connect(analyser);
-                    analyser.connect(audioCtx.destination);
-                    
-                    if (nextStartTime < audioCtx.currentTime) {
-                        nextStartTime = audioCtx.currentTime + 0.03; 
-                    }
-                    
-                    source.start(nextStartTime);
-                    nextStartTime += audioBuffer.duration;
-                };
-            };
+    // 3. Phần phát âm thanh: Sửa int16Array thành int32Data và chia cho 2147483648.0
+    let audioBuffer = audioCtx.createBuffer(1, samplesCount, 16000);
+    let channelData = audioBuffer.getChannelData(0);
+    
+    for (let i = 0; i < samplesCount; i++) {
+        channelData[i] = int32Data[i] / 2147483648.0;
+    }
+    
+    let source = audioCtx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(analyser);
+    analyser.connect(audioCtx.destination);
+    
+    if (nextStartTime < audioCtx.currentTime) {
+        nextStartTime = audioCtx.currentTime + 0.03; 
+    }
+    
+    source.start(nextStartTime);
+    nextStartTime += audioBuffer.duration;
+};
 
             // Vẽ đồ thị sóng âm Radar Cyan chuyên nghiệp
             function draw() {
