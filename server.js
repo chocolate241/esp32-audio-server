@@ -1,15 +1,26 @@
 const express = require('express');
 const { WebSocketServer } = require('ws');
-// --- PHẦN THÊM MỚI 1: KHAI BÁO GEMINI ---
 const { GoogleGenerativeAI } = require("@google/generative-ai");
+const wav = require('wav');
+const fs = require('fs');
+const path = require('path');
+
+// --- CẤU HÌNH GEMINI ---
 const genAI = new GoogleGenerativeAI("AIzaSyAaHN8Ot1-uX792aKgNxm3RD11HJALgBLs");
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// Mảng tạm để gom âm thanh gửi lên AI
+// Biến lưu trữ trạng thái xử lý AI
+let sttResultText = "Đang chờ mệnh lệnh từ ESP32...";
 let audioChunks = [];
+let lastActiveTime = Date.now();
+let isRecording = false;
+
+app.get('/get-gemini-text', (req, res) => {
+    res.json({ text: sttResultText });
+});
 
 app.get('/nghe', (req, res) => {
     res.send(`
@@ -25,6 +36,8 @@ app.get('/nghe', (req, res) => {
             p { color: #45f3ff; font-size: 14px; margin-top: 0; margin-bottom: 25px; }
             button { padding: 15px 35px; font-size: 16px; cursor: pointer; background: #66fcf1; color: #0b0c10; border: none; border-radius: 25px; font-weight: bold; box-shadow: 0 4px 15px rgba(102,252,241,0.3); transition: 0.3s; }
             button:hover { background: #45f3ff; transform: translateY(-2px); }
+            
+            #stt-box { max-width: 600px; margin: 20px auto; background: #1f2833; padding: 15px; border-radius: 10px; border: 1px dashed #66fcf1; font-size: 18px; color: #ff9f43; font-weight: bold; }
             .dashboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 15px; max-width: 600px; margin: 20px auto; padding: 10px; }
             .card { background: #1f2833; padding: 15px; border-radius: 10px; border: 1px solid #45f3ff33; }
             .card-title { font-size: 12px; color: #85929e; text-transform: uppercase; margin-bottom: 5px; }
@@ -36,44 +49,67 @@ app.get('/nghe', (req, res) => {
     <body>
         <h2>🎙️ HỆ THỐNG GIÁM SÁT ÂM THANH CLOUD</h2>
         <p>Real-time Audio Digital Signal Processing (DSP) Analytics</p>
+        
         <button id="startBtn">KẾT NỐI & PHÂN TÍCH</button>
         <div id="status">Hệ thống đang chờ lệnh...</div>
+
+        <div id="stt-box">
+            🤖 Gemini: <span id="sttText" style="color: #fff; font-weight: normal; font-style: italic;">Đang đợi bạn nói...</span>
+        </div>
+
         <div class="dashboard">
             <div class="card"><div class="card-title">Biên độ Đỉnh</div><div id="valPeak" class="card-value">0%</div></div>
             <div class="card"><div class="card-title">Tần số mẫu</div><div id="valSample" class="card-value">0 Hz</div></div>
             <div class="card"><div class="card-title">Số Gói Nhận</div><div id="valPackets" class="card-value">0</div></div>
             <div class="card"><div class="card-title">Độ Trễ 🛡️</div><div id="valLatency" class="card-value">0ms</div></div>
         </div>
+
         <canvas id="visualizer" width="600" height="160"></canvas>
+
         <script>
             let audioCtx, ws, analyser, nextStartTime = 0;
             let packetCount = 0, lastPacketTime = Date.now(), sampleRateCounter = 0, lastSecTime = Date.now();
+
             const startBtn = document.getElementById('startBtn'), statusDiv = document.getElementById('status'), canvas = document.getElementById('visualizer'), canvasCtx = canvas.getContext('2d');
             const valPeak = document.getElementById('valPeak'), valSample = document.getElementById('valSample'), valPackets = document.getElementById('valPackets'), valLatency = document.getElementById('valLatency');
+
+            // Cập nhật text từ Gemini mỗi 500ms
+            setInterval(async () => {
+                try {
+                    let res = await fetch('/get-gemini-text');
+                    let data = await res.json();
+                    document.getElementById('sttText').innerText = data.text;
+                } catch(e) {}
+            }, 500);
 
             startBtn.onclick = () => {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
                 analyser = audioCtx.createAnalyser(); analyser.fftSize = 512;
                 startBtn.style.display = 'none'; canvas.style.display = 'block';
                 statusDiv.innerText = "Đang bắt tín hiệu từ Cloud...";
+
                 const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
                 ws = new WebSocket(protocol + window.location.host);
                 ws.binaryType = 'arraybuffer';
+
                 ws.onopen = () => { 
                     statusDiv.innerText = "HỆ THỐNG ONLINE 🟢"; 
                     statusDiv.style.color = "#66fcf1";
                     nextStartTime = audioCtx.currentTime;
                     draw();
                 };
+
                 ws.onmessage = (event) => {
                     if (event.data.byteLength === 0) return;
                     packetCount++;
                     let now = Date.now();
                     valLatency.innerText = (now - lastPacketTime) + "ms";
                     lastPacketTime = now;
+                    
                     let int32Data = new Int32Array(event.data); 
                     let samplesCount = int32Data.length;
                     sampleRateCounter += samplesCount;
+
                     let maxVal = 0;
                     for (let i = 0; i < samplesCount; i++) {
                         let absVal = Math.abs(int32Data[i]);
@@ -81,11 +117,13 @@ app.get('/nghe', (req, res) => {
                     }
                     valPeak.innerText = ((maxVal / 2147483648.0) * 100).toFixed(1) + "%";
                     valPackets.innerText = packetCount;
+
                     if (now - lastSecTime >= 1000) {
                         valSample.innerText = sampleRateCounter + " Hz";
                         sampleRateCounter = 0;
                         lastSecTime = now;
                     }
+
                     let audioBuffer = audioCtx.createBuffer(1, samplesCount, 16000);
                     let channelData = audioBuffer.getChannelData(0);
                     for (let i = 0; i < samplesCount; i++) {
@@ -123,51 +161,79 @@ app.get('/nghe', (req, res) => {
     `);
 });
 
-const server = app.listen(PORT, () => console.log(`Analytics Server đang chạy tại cổng: ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Server chạy tại cổng: ${PORT}`));
 const wss = new WebSocketServer({ server });
 
-// --- PHẦN THÊM MỚI 2: XỬ LÝ DỮ LIỆU VỚI GEMINI ---
 wss.on('connection', (ws) => {
     ws.on('message', async (message) => {
-        // Chuyển tiếp dữ liệu cho Web xem visualizer (Code cũ của bạn)
+        // Gửi sang trang Web để vẽ Visualizer
         wss.clients.forEach((client) => {
-            if (client !== ws && client.readyState === 1) {
-                client.send(message);
-            }
+            if (client !== ws && client.readyState === 1) client.send(message);
         });
 
-        // Xử lý AI: Gom đủ khoảng 4 giây âm thanh 32-bit (16000 * 4 bytes * 4s = 256,000 bytes)
+        // Xử lý Audio cho Gemini
         if (Buffer.isBuffer(message)) {
-            audioChunks.push(message);
-            let totalLength = audioChunks.reduce((acc, curr) => acc + curr.length, 0);
-
-            if (totalLength >= 256000) {
-                const fullBuffer = Buffer.concat(audioChunks);
-                audioChunks = []; // Reset mảng gom
-
-                try {
-                    console.log("-> Đang gửi âm thanh lên Gemini...");
-                    const result = await model.generateContent([
-                        "Đây là âm thanh từ micro I2S. Nếu bạn nghe thấy mệnh lệnh 'bật đèn', hãy trả về chính xác chuỗi 'LED_ON'. Nếu nghe 'tắt đèn', trả về 'LED_OFF'. Nếu là âm thanh khác, hãy tóm tắt ngắn gọn nội dung.",
-                        {
-                            inlineData: {
-                                data: fullBuffer.toString("base64"),
-                                mimeType: "audio/pcm;rate=16000",
-                            },
-                        },
-                    ]);
-
-                    const responseText = result.response.text();
-                    console.log("Gemini phản hồi:", responseText);
-
-                    // Gửi lệnh ngược lại cho ESP32 nếu có từ khóa
-                    if (responseText.includes("LED_ON") || responseText.includes("LED_OFF")) {
-                        ws.send(responseText.includes("LED_ON") ? "ON" : "OFF");
-                    }
-                } catch (error) {
-                    console.error("Lỗi Gemini:", error.message);
-                }
+            lastActiveTime = Date.now();
+            if (!isRecording) {
+                isRecording = true;
+                audioChunks = [];
+                sttResultText = "⚡ Đang thu âm câu lệnh...";
             }
+
+            // Chuyển 32-bit sang 16-bit PCM
+            let int32Array = new Int32Array(message.buffer);
+            let int16Buffer = Buffer.alloc(int32Array.length * 2);
+            for (let i = 0; i < int32Array.length; i++) {
+                let sample16 = int32Array[i] >> 16; 
+                int16Buffer.writeInt16LE(sample16, i * 2);
+            }
+            audioChunks.push(int16Buffer);
         }
     });
 });
+
+// Kiểm tra im lặng để đóng gói và gửi Gemini
+setInterval(async () => {
+    if (isRecording && (Date.now() - lastActiveTime > 1200)) {
+        isRecording = false;
+        sttResultText = "⏳ Đang phân tích âm thanh...";
+        
+        let finalBuffer = Buffer.concat(audioChunks);
+        let filename = path.join(__dirname, 'command.wav');
+
+        let wavWriter = new wav.FileWriter(filename, {
+            channels: 1,
+            sampleRate: 16000,
+            bitDepth: 16
+        });
+
+        wavWriter.write(finalBuffer);
+        wavWriter.end();
+
+        wavWriter.on('done', async () => {
+            try {
+                const fileBuffer = fs.readFileSync(filename);
+                const base64Audio = fileBuffer.toString('base64');
+
+                const result = await model.generateContent([
+                    "Đây là âm thanh từ micro. Nếu nghe thấy lệnh muốn bật đèn hoặc thiết bị, trả về đúng 'LED_ON'. Nếu muốn tắt, trả về đúng 'LED_OFF'. Nếu là câu nói khác, hãy tóm tắt lại ngắn gọn.",
+                    { inlineData: { data: base64Audio, mimeType: "audio/wav" } },
+                ]);
+
+                const responseText = result.response.text().trim();
+                console.log("Gemini phản hồi:", responseText);
+                sttResultText = responseText;
+
+                if (responseText.includes("LED_ON")) {
+                    sttResultText = "✨ Lệnh: BẬT ĐÈN";
+                    wss.clients.forEach(c => { if (c.readyState === 1) c.send("ON"); });
+                } else if (responseText.includes("LED_OFF")) {
+                    sttResultText = "✨ Lệnh: TẬT ĐÈN";
+                    wss.clients.forEach(c => { if (c.readyState === 1) c.send("OFF"); });
+                }
+            } catch (err) {
+                sttResultText = "❌ Lỗi Gemini: " + err.message;
+            }
+        });
+    }
+}, 300);

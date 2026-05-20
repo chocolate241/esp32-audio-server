@@ -13,6 +13,7 @@
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
     "express": "^5.2.1",
+    "wav": "^1.0.2",
     "ws": "^8.20.1"
   }
 }
