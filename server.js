@@ -4,6 +4,7 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 const wav = require('wav');
 const fs = require('fs');
 const path = require('path');
+const os = require('os'); // 🔥 THÊM: Để lấy thư mục tạm của hệ thống Cloud
 
 // --- CẤU HÌNH GEMINI ---
 const genAI = new GoogleGenerativeAI("AIzaSyAaHN8Ot1-uX792aKgNxm3RD11HJALgBLs");
@@ -73,14 +74,14 @@ app.get('/nghe', (req, res) => {
             const startBtn = document.getElementById('startBtn'), statusDiv = document.getElementById('status'), canvas = document.getElementById('visualizer'), canvasCtx = canvas.getContext('2d');
             const valPeak = document.getElementById('valPeak'), valSample = document.getElementById('valSample'), valPackets = document.getElementById('valPackets'), valLatency = document.getElementById('valLatency');
 
-            // Cập nhật text từ Gemini mỗi 500ms
+            // 🔥 SỬA: Tăng từ 500ms lên 2000ms để tránh dồn ứ Request gây sập 502 khi Render khởi động lại
             setInterval(async () => {
                 try {
                     let res = await fetch('/get-gemini-text');
                     let data = await res.json();
                     document.getElementById('sttText').innerText = data.text;
                 } catch(e) {}
-            }, 500);
+            }, 2000);
 
             startBtn.onclick = () => {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
@@ -199,7 +200,9 @@ setInterval(async () => {
         sttResultText = "⏳ Đang phân tích âm thanh...";
         
         let finalBuffer = Buffer.concat(audioChunks);
-        let filename = path.join(__dirname, 'command.wav');
+        
+        // 🔥 SỬA CHÍ MẠNG: Đổi từ __dirname sang os.tmpdir() để tránh lỗi ghi file trên Render
+        let filename = path.join(os.tmpdir(), 'command.wav');
 
         let wavWriter = new wav.FileWriter(filename, {
             channels: 1,
@@ -228,7 +231,7 @@ setInterval(async () => {
                     sttResultText = "✨ Lệnh: BẬT ĐÈN";
                     wss.clients.forEach(c => { if (c.readyState === 1) c.send("ON"); });
                 } else if (responseText.includes("LED_OFF")) {
-                    sttResultText = "✨ Lệnh: TẬT ĐÈN";
+                    sttResultText = "✨ Lệnh: TẮT ĐÈN"; // Sửa lỗi chính tả "TẬT ĐÈN" của code cũ luôn nhé!
                     wss.clients.forEach(c => { if (c.readyState === 1) c.send("OFF"); });
                 }
             } catch (err) {
