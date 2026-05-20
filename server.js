@@ -150,6 +150,7 @@ if (event.data.byteLength === 0) return;
     source.start(nextStartTime);
     nextStartTime += audioBuffer.duration;
 };
+};
 
             // Vẽ đồ thị sóng âm Radar Cyan chuyên nghiệp
             function draw() {
