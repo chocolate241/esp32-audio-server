@@ -7,8 +7,11 @@ const path = require('path');
 const os = require('os'); // 🔥 THÊM: Để lấy thư mục tạm của hệ thống Cloud
 
 // --- CẤU HÌNH GEMINI ---
+// --- CẤU HÌNH GEMINI ---
 const genAI = new GoogleGenerativeAI("AIzaSyAaHN8Ot1-uX792aKgNxm3RD11HJALgBLs");
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+// 🔥 SỬA THÀNH DÒNG NÀY: Thêm "models/" phía trước tên model
+const model = genAI.getGenerativeModel({ model: "models/gemini-1.5-flash" });
 
 const app = express();
 const PORT = process.env.PORT || 8080;
