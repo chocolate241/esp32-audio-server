@@ -41,7 +41,6 @@ app.get('/dashboard', (req, res) => {
                 </div>
             </header>
 
-            <!-- Thống kê trạng thái -->
             <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
                 <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl">
                     <h2 class="text-xs text-slate-400 uppercase font-semibold">Trạng thái hệ thống</h2>
@@ -64,7 +63,6 @@ app.get('/dashboard', (req, res) => {
                 </div>
             </div>
 
-            <!-- Khu vực đồ thị trực quan -->
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl">
                     <h2 class="text-xs font-semibold text-slate-400 uppercase mb-2">Sơ đồ sóng âm (Waveform)</h2>
@@ -76,7 +74,6 @@ app.get('/dashboard', (req, res) => {
                 </div>
             </div>
 
-            <!-- Kết quả AI và Log -->
             <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 md:col-span-1">
                     <h2 class="text-sm font-bold text-slate-100 mb-2">🤖 Phản hồi từ Gemini AI</h2>
@@ -105,14 +102,12 @@ app.get('/dashboard', (req, res) => {
             const connStatus = document.getElementById('connection-status');
             const muteVoice = document.getElementById('mute-voice');
 
-            // Khởi tạo Audio Context để nghe tiếng bản thân và phân tích FFT
             let audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
             let analyser = audioCtx.createAnalyser();
             analyser.fftSize = 256;
             let bufferLength = analyser.frequencyBinCount;
             let dataArray = new Uint8Array(bufferLength);
 
-            // Cấu hình Canvas vẽ đồ thị
             const canvasWave = document.getElementById('waveform');
             const ctxWave = canvasWave.getContext('2d');
             const canvasSpec = document.getElementById('spectrum');
@@ -132,7 +127,7 @@ app.get('/dashboard', (req, res) => {
                 if (type === 'success') color = 'text-emerald-400 font-semibold';
                 if (type === 'warn') color = 'text-amber-400';
                 if (type === 'error') color = 'text-red-400 font-bold';
-                logBox.innerHTML += \`<div class="\${color}">[\${timeStr}] \${message}</div>\`;
+                logBox.innerHTML += `<div class="\${color}">[\${timeStr}] \${message}</div>`;
                 logBox.scrollTop = logBox.scrollHeight;
             }
 
@@ -166,7 +161,6 @@ app.get('/dashboard', (req, res) => {
                     return;
                 }
 
-                // XỬ LÝ ÂM THANH NHỊ PHÂN RAW PCM 16-BIT TỪ ESP32 GỬI QUA SERVER
                 if (event.data.byteLength > 0) {
                     let now = Date.now();
                     latencyDiv.innerText = (now - lastPacketTime) + " ms";
@@ -175,12 +169,10 @@ app.get('/dashboard', (req, res) => {
                     let int16Array = new Int16Array(event.data);
                     let float32Array = new Float32Array(int16Array.length);
                     
-                    // Chuẩn hóa PCM 16-bit về khoảng [-1.0, 1.0] cho Web Audio API
                     for (let i = 0; i < int16Array.length; i++) {
                         float32Array[i] = int16Array[i] / 32768.0;
                     }
 
-                    // Phát ra loa máy tính nếu người dùng tích chọn "Nghe giọng"
                     if (!muteVoice.checked) {
                         let audioBuffer = audioCtx.createBuffer(1, float32Array.length, 16000);
                         audioBuffer.getChannelData(0).set(float32Array);
@@ -190,7 +182,6 @@ app.get('/dashboard', (req, res) => {
                         analyser.connect(audioCtx.destination);
                         source.start();
                     } else {
-                        // Vẫn đưa vào bộ phân tích đồ thị nhưng không cho ra loa ngoài
                         let audioBuffer = audioCtx.createBuffer(1, float32Array.length, 16000);
                         audioBuffer.getChannelData(0).set(float32Array);
                         let source = audioCtx.createBufferSource();
@@ -201,11 +192,9 @@ app.get('/dashboard', (req, res) => {
                 }
             };
 
-            // Vòng lặp Render đồ thị tần số (FFT) và Sóng âm
             function drawCharts() {
                 requestAnimationFrame(drawCharts);
                 
-                // 1. Vẽ Đồ thị dạng Sóng (Waveform)
                 analyser.getByteTimeDomainData(dataArray);
                 ctxWave.fillStyle = '#0b0f19';
                 ctxWave.fillRect(0, 0, canvasWave.width, canvasWave.height);
@@ -223,7 +212,6 @@ app.get('/dashboard', (req, res) => {
                 ctxWave.lineTo(canvasWave.width, canvasWave.height / 2);
                 ctxWave.stroke();
 
-                // 2. Vẽ Biểu đồ cột tần số nhiễu (Spectrum)
                 analyser.getByteFrequencyData(dataArray);
                 ctxSpec.fillStyle = '#0b0f19';
                 ctxSpec.fillRect(0, 0, canvasSpec.width, canvasSpec.height);
@@ -232,7 +220,6 @@ app.get('/dashboard', (req, res) => {
                 let xSpec = 0;
                 for (let i = 0; i < bufferLength; i++) {
                     barHeight = dataArray[i] / 1.5;
-                    // Đổi màu sắc từ xanh sang đỏ dựa vào dải tần (giúp phát hiện nhiễu xung cao tần)
                     ctxSpec.fillStyle = 'rgb(' + (barHeight+100) + ',34,180)';
                     ctxSpec.fillRect(xSpec, canvasSpec.height - barHeight, barWidth - 1, barHeight);
                     xSpec += barWidth;
@@ -240,7 +227,6 @@ app.get('/dashboard', (req, res) => {
             }
             drawCharts();
             
-            // Kích hoạt AudioContext khi click màn hình (Luật bảo mật Chrome)
             window.addEventListener('click', () => { if(audioCtx.state === 'suspended') audioCtx.resume(); });
         </script>
     </body>
@@ -258,15 +244,12 @@ wss.on('connection', (ws, req) => {
     
     ws.on('message', async (message, isBinary) => {
         if (isBinary) {
-            // Nhận diện luồng từ phần cứng gửi lên
             ws.isHardware = true; 
 
-            // NẾU HỆ THỐNG ĐANG BẬN XỬ LÝ -> KHÔNG NHẬN YÊU CẦU, NGẮT NGAY
             if (isProcessing) {
                 return; 
             }
 
-            // Gói nhị phân đầu tiên của phiên ghi âm mới
             if (!recordingTimers.has(ws)) {
                 audioBuffers.set(ws, []);
                 console.log('🎙️ [Kích hoạt] Thu âm câu lệnh (Tối đa 5s)...');
@@ -279,10 +262,10 @@ wss.on('connection', (ws, req) => {
                     logType: 'success'
                 });
 
-                // Đồng hồ đếm ngược đúng 4.5 giây (rút ngắn thời gian để giảm dung lượng tải lên Gemini)
+                // ĐỒNG BỘ: Sửa thành đúng 5000ms khớp hoàn toàn với phần cứng ESP32
                 let timer = setTimeout(() => {
                     processCommand(ws);
-                }, 4500);
+                }, 5000);
                 recordingTimers.set(ws, timer);
             }
 
@@ -290,7 +273,6 @@ wss.on('connection', (ws, req) => {
             bufferList.push(Buffer.from(message));
             audioBuffers.set(ws, bufferList);
 
-            // Stream ngược gói tin thô về cho Trình duyệt Dashboard vẽ đồ thị & phát tiếng kêu
             wss.clients.forEach((client) => {
                 if (client !== ws && client.readyState === 1 && !client.isHardware) {
                     client.send(message);
@@ -305,11 +287,10 @@ wss.on('connection', (ws, req) => {
                 });
             }
         } else {
-            // Xử lý gói Text điều khiển trạng thái từ ESP32 gửi lên
             try {
                 const textMsg = message.toString();
                 if (textMsg === "RESET_STATE") {
-                    isProcessing = false; // Mở khóa hệ thống, cho phép nhận lệnh tiếp theo
+                    isProcessing = false; 
                     broadcastToMonitor({
                         type: 'MONITOR_UPDATE',
                         state: '🟢 SẴN SÀNG',
@@ -330,7 +311,7 @@ wss.on('connection', (ws, req) => {
 });
 
 async function processCommand(ws) {
-    isProcessing = true; // BẬT KHÓA TOÀN CỤC CHỐNG TRÙNG LẶP
+    isProcessing = true; 
 
     broadcastToMonitor({ 
         type: 'MONITOR_UPDATE', 
@@ -355,8 +336,9 @@ async function processCommand(ws) {
         const wavBuffer = createWavBuffer(pcmBuffers, 16000);
         const base64Audio = wavBuffer.toString('base64');
 
+        // ĐỒNG BỘ: Chuyển đổi sang gemini-1.5-flash để mở rộng hạn mức quota free rộng rãi hơn
         const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: 'gemini-1.5-flash',
             contents: [
                 { inlineData: { mimeType: 'audio/wav', data: base64Audio } },
                 {
@@ -396,6 +378,7 @@ async function processCommand(ws) {
         }
 
     } catch (error) {
+        // TỐI ƯU: Đổi sang báo hiệu ngắt cứng cho ESP32 về ngủ để chống vòng lặp kẹt trạng thái khi lỗi API xảy ra
         if (ws.readyState === 1) ws.send("CMD_DONE");
         broadcastToMonitor({ type: 'MONITOR_UPDATE', state: '🟢 LỖI HỆ THỐNG', bufferLength: 0, log: `Lỗi API Gemini: ${error.message}`, logType: 'error' });
         isProcessing = false;
@@ -422,6 +405,7 @@ function createWavBuffer(pcmBuffers, sampleRate = 16000) {
     return wavBuffer;
 }
 
+// Hàm đẩy log về trình duyệt quản trị
 function broadcastToMonitor(obj) {
     wss.clients.forEach((client) => {
         if (client.readyState === 1 && !client.isHardware) {
@@ -429,3 +413,5 @@ function broadcastToMonitor(obj) {
         }
     });
 }
+
+
