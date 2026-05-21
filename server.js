@@ -5,102 +5,239 @@ require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 8080;
+
+// Khởi tạo SDK Gemini mới nhất
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-let isProcessing = false; 
-const audioBuffers = new Map();    
+// Quản lý trạng thái hệ thống và bộ đệm
+let isProcessing = false; // Khóa toàn cục chống xử lý trùng lặp
+const audioBuffers = new Map();     
 const recordingTimers = new Map();  
 
+// --- TRANG DASHBOARD RADAR ÂM THANH CHUYÊN NGHIỆP ---
 app.get('/dashboard', (req, res) => {
     res.send(`
     <!DOCTYPE html>
     <html lang="vi">
     <head>
         <meta charset="UTF-8">
-        <title>ESP32 Console</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>ESP32 Audio & Gemini AI Radar</title>
         <script src="https://cdn.tailwindcss.com"></script>
+        <style>
+            body { background-color: #0b0f19; }
+            .log-container::-webkit-scrollbar { width: 4px; }
+            .log-container::-webkit-scrollbar-thumb { background-color: #1e293b; border-radius: 2px; }
+        </style>
     </head>
-    <body class="bg-[#0b0f19] text-slate-200 p-6">
-        <div class="max-w-4xl mx-auto space-y-6">
-            <div class="flex justify-between border-b border-slate-800 pb-4">
-                <h1 class="text-xl font-bold text-cyan-400">🎙️ ESP32 Audio AI Radar</h1>
-                <div id="status" class="text-xs px-3 py-1 rounded bg-red-500/10 text-red-400 border border-red-500/20">🔴 Offline</div>
-            </div>
-            <div class="grid grid-cols-3 gap-4">
-                <div class="bg-slate-900 p-4 rounded-xl border border-slate-800">
-                    <span class="text-xs text-slate-400">Trạng thái</span>
-                    <div id="state" class="text-base font-bold mt-1 text-emerald-400">SẴN SÀNG</div>
+    <body class="text-slate-200 font-sans p-4 md:p-6">
+        <div class="max-w-6xl mx-auto space-y-6">
+            
+            <header class="flex flex-col md:flex-row md:items-center md:justify-between border-b border-slate-800 pb-4">
+                <div>
+                    <h1 class="text-2xl font-bold text-cyan-400 flex items-center gap-2">🎙️ Hệ Thống Radar Âm Thanh & AI</h1>
+                    <p class="text-xs text-slate-400 mt-1">Kết nối liên tục - Kích hoạt Realtime - Phân tích phổ tần số</p>
                 </div>
-                <div class="bg-slate-900 p-4 rounded-xl border border-slate-800">
-                    <span class="text-xs text-slate-400">Gói dữ liệu</span>
-                    <div id="buffer" class="text-base font-bold mt-1 text-cyan-400">0</div>
+                <div id="connection-status" class="mt-2 px-3 py-1 rounded-full text-xs font-medium bg-red-500/10 text-red-400 border border-red-500/20 w-fit">
+                    🔴 Mất kết nối Monitor
                 </div>
-                <div class="bg-slate-900 p-4 rounded-xl border border-slate-800 flex items-center justify-between">
-                    <label class="text-xs text-slate-400 cursor-pointer" for="live">Nghe giọng nói (Live)</label>
-                    <input type="checkbox" id="live" class="rounded bg-slate-950 border-slate-800" checked>
+            </header>
+
+            <!-- Thống kê trạng thái -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl">
+                    <h2 class="text-xs text-slate-400 uppercase font-semibold">Trạng thái hệ thống</h2>
+                    <div id="system-state" class="text-lg font-bold text-emerald-400 mt-1">HỆ THỐNG SẴN SÀNG</div>
+                </div>
+                <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl">
+                    <h2 class="text-xs text-slate-400 uppercase font-semibold">Gói lệnh thu âm</h2>
+                    <div id="buffer-count" class="text-2xl font-extrabold text-cyan-400 mt-1">0</div>
+                </div>
+                <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl">
+                    <h2 class="text-xs text-slate-400 uppercase font-semibold">Độ trễ Ping-Pong</h2>
+                    <div id="latency" class="text-lg font-bold text-emerald-400 mt-1">0 ms</div>
+                </div>
+                <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl">
+                    <h2 class="text-xs text-slate-400 uppercase font-semibold">Âm thanh phản hồi</h2>
+                    <div class="flex items-center gap-2 mt-2">
+                        <input type="checkbox" id="mute-voice" class="rounded bg-slate-950 border-slate-800 text-cyan-500">
+                        <label for="mute-voice" class="text-xs text-slate-300 cursor-pointer">Nghe giọng nói (Live)</label>
+                    </div>
                 </div>
             </div>
-            <div class="bg-slate-900 p-4 rounded-xl border border-slate-800">
-                <span class="text-xs text-slate-400">Phản hồi AI</span>
-                <div id="ai" class="bg-slate-950 p-3 rounded mt-2 text-xs font-mono min-h-[60px]">Chờ lệnh...</div>
+
+            <!-- Khu vực đồ thị trực quan -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl">
+                    <h2 class="text-xs font-semibold text-slate-400 uppercase mb-2">Sơ đồ sóng âm (Waveform)</h2>
+                    <canvas id="waveform" class="w-full h-40 bg-slate-950 rounded-lg border border-slate-800/50"></canvas>
+                </div>
+                <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl">
+                    <h2 class="text-xs font-semibold text-slate-400 uppercase mb-2">Phổ tần số nhiễu bệnh (FFT Spectrum)</h2>
+                    <canvas id="spectrum" class="w-full h-40 bg-slate-950 rounded-lg border border-slate-800/50"></canvas>
+                </div>
             </div>
-            <div class="bg-slate-900 p-4 rounded-xl border border-slate-800">
-                <span class="text-xs text-slate-400">Log</span>
-                <div id="log" class="bg-slate-950 p-3 rounded mt-2 text-[11px] font-mono h-32 overflow-y-auto space-y-1 text-slate-400"></div>
+
+            <!-- Kết quả AI và Log -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 md:col-span-1">
+                    <h2 class="text-sm font-bold text-slate-100 mb-2">🤖 Phản hồi từ Gemini AI</h2>
+                    <div id="ai-response" class="bg-slate-950 border border-slate-800 p-3 rounded-lg text-slate-300 font-mono text-xs min-h-[120px] whitespace-pre-wrap">
+                        Chờ lệnh từ thiết bị...
+                    </div>
+                </div>
+                <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 md:col-span-2 flex flex-col h-[180px]">
+                    <div class="flex items-center justify-between mb-2">
+                        <h2 class="text-sm font-bold text-slate-100">📋 Nhật Ký Hệ Thống</h2>
+                        <button onclick="document.getElementById('log-box').innerHTML=''" class="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400">Xóa</button>
+                    </div>
+                    <div id="log-box" class="log-container bg-slate-950 border border-slate-800 p-3 rounded-lg font-mono text-[11px] text-slate-400 overflow-y-auto flex-1 space-y-1">
+                        [Hệ thống] Trình giám sát đã khởi tạo thành công.
+                    </div>
+                </div>
             </div>
         </div>
-        <script>
-            const logBox = document.getElementById('log');
-            let audioCtx = null;
-            let nextPlayTime = 0;
 
-            function addLog(msg) {
-                logBox.innerHTML += '<div>' + msg + '</div>';
+        <script>
+            const logBox = document.getElementById('log-box');
+            const stateDiv = document.getElementById('system-state');
+            const bufferDiv = document.getElementById('buffer-count');
+            const latencyDiv = document.getElementById('latency');
+            const aiDiv = document.getElementById('ai-response');
+            const connStatus = document.getElementById('connection-status');
+            const muteVoice = document.getElementById('mute-voice');
+
+            // Cấu hình âm thanh Engine Web Audio
+            let audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+            let analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 256;
+            let bufferLength = analyser.frequencyBinCount;
+            let dataArray = new Uint8Array(bufferLength);
+
+            const canvasWave = document.getElementById('waveform');
+            const ctxWave = canvasWave.getContext('2d');
+            const canvasSpec = document.getElementById('spectrum');
+            const ctxSpec = canvasSpec.getContext('2d');
+
+            function resizeCanvases() {
+                canvasWave.width = canvasWave.clientWidth; canvasWave.height = canvasWave.clientHeight;
+                canvasSpec.width = canvasSpec.clientWidth; canvasSpec.height = canvasSpec.clientHeight;
+            }
+            window.addEventListener('resize', resizeCanvases);
+            resizeCanvases();
+
+            function addLog(message, type = 'info') {
+                const now = new Date();
+                const timeStr = now.toTimeString().split(' ')[0];
+                let color = 'text-slate-400';
+                if (type === 'success') color = 'text-emerald-400 font-semibold';
+                if (type === 'warn') color = 'text-amber-400';
+                if (type === 'error') color = 'text-red-400 font-bold';
+                logBox.innerHTML += \`<div class="\${color}">[\${timeStr}] \${message}</div>\`;
                 logBox.scrollTop = logBox.scrollHeight;
             }
 
-            const ws = new WebSocket(window.location.protocol === 'https:' ? 'wss://' : 'ws://' + window.location.host);
+            // --- ĐOẠN SỬA LỖI URL WEBSOCKET CHỐNG SẬP PHẦN CỨNG ---
+            const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+            let hostAddr = window.location.host;
+            if (!hostAddr || hostAddr === '') {
+                hostAddr = 'esp32-audio-server-e1gr.onrender.com'; // Dự phòng domain của bạn
+            }
+
+            const ws = new WebSocket(protocol + hostAddr);
             ws.binaryType = 'arraybuffer';
+            let lastPacketTime = Date.now();
 
-            ws.onopen = () => {  document.getElementById('status').innerText = '🟢 Online'; };
-            ws.onclose = () => { document.getElementById('status').innerText = '🔴 Offline'; };
+            ws.onopen = () => {
+                connStatus.className = "mt-2 px-3 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 w-fit";
+                connStatus.innerText = '🟢 Hệ thống trực tuyến';
+                addLog("Kết nối thành công cổng WebSocket Monitor!", "success");
+            };
 
-            ws.onmessage = (e) => {
-                if (typeof e.data === 'string') {
+            ws.onclose = () => {
+                connStatus.className = "mt-2 px-3 py-1 rounded-full text-xs font-medium bg-red-500/10 text-red-400 border border-red-500/20 w-fit";
+                connStatus.innerText = '🔴 Mất kết nối Monitor';
+                addLog("Mất kết nối với Server!", "error");
+            };
+
+            ws.onmessage = (event) => {
+                if (typeof event.data === 'string') {
                     try {
-                        const d = JSON.parse(e.data);
-                        if(d.state) document.getElementById('state').innerText = d.state;
-                        if(d.buffer !== undefined) document.getElementById('buffer').innerText = d.buffer;
-                        if(d.log) addLog(d.log);
-                        if(d.ai) document.getElementById('ai').innerText = d.ai;
-                    } catch(err){}
+                        const data = JSON.parse(event.data);
+                        if (data.type === 'MONITOR_UPDATE') {
+                            stateDiv.innerText = data.state;
+                            bufferDiv.innerText = data.bufferLength;
+                            if (data.log) addLog(data.log, data.logType || 'info');
+                            if (data.aiResponse) aiDiv.innerText = data.aiResponse;
+                        }
+                    } catch(e) {}
                     return;
                 }
-                
-                // PHÁT LIVE AUDIO CHUẨN: Đồng bộ thẳng mảng Int16 từ ESP32 mà không qua xử lý trung gian gây delay
-                if (e.data.byteLength > 0 && document.getElementById('live').checked) {
-                    if(!audioCtx) {
-                        audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-                        nextPlayTime = audioCtx.currentTime;
+
+                // Xử lý luồng âm thanh binary PCM thô truyền từ mạch về qua server
+                if (event.data.byteLength > 0) {
+                    let now = Date.now();
+                    latencyDiv.innerText = (now - lastPacketTime) + " ms";
+                    lastPacketTime = now;
+
+                    let int16Array = new Int16Array(event.data);
+                    let float32Array = new Float32Array(int16Array.length);
+                    for (let i = 0; i < int16Array.length; i++) {
+                        float32Array[i] = int16Array[i] / 32768.0;
                     }
-                    if (audioCtx.state === 'suspended') audioCtx.resume();
 
-                    let int16 = new Int16Array(e.data);
-                    let f32 = new Float32Array(int16.length);
-                    for (let i = 0; i < int16.length; i++) f32[i] = int16[i] / 32768.0;
+                    let audioBuffer = audioCtx.createBuffer(1, float32Array.length, 16000);
+                    audioBuffer.getChannelData(0).set(float32Array);
+                    let source = audioCtx.createBufferSource();
+                    source.buffer = audioBuffer;
+                    source.connect(analyser);
 
-                    let buffer = audioCtx.createBuffer(1, f32.length, 16000);
-                    buffer.getChannelData(0).set(f32);
-                    let src = audioCtx.createBufferSource();
-                    src.buffer = buffer;
-                    src.connect(audioCtx.destination);
-                    
-                    if (nextPlayTime < audioCtx.currentTime) nextPlayTime = audioCtx.currentTime;
-                    src.start(nextPlayTime);
-                    nextPlayTime += buffer.duration;
+                    if (!muteVoice.checked) {
+                        analyser.connect(audioCtx.destination);
+                    } else {
+                        analyser.disconnect(audioCtx.destination);
+                    }
+                    source.start();
                 }
             };
-            window.addEventListener('click', () => { if(audioCtx && audioCtx.state === 'suspended') audioCtx.resume(); });
+
+            function drawCharts() {
+                requestAnimationFrame(drawCharts);
+                
+                // Vẽ sóng âm (Waveform)
+                analyser.getByteTimeDomainData(dataArray);
+                ctxWave.fillStyle = '#0b0f19';
+                ctxWave.fillRect(0, 0, canvasWave.width, canvasWave.height);
+                ctxWave.lineWidth = 2;
+                ctxWave.strokeStyle = '#22d3ee';
+                ctxWave.beginPath();
+                let sliceWidth = canvasWave.width * 1.0 / bufferLength;
+                let x = 0;
+                for (let i = 0; i < bufferLength; i++) {
+                    let v = dataArray[i] / 128.0;
+                    let y = v * canvasWave.height / 2;
+                    if (i === 0) ctxWave.moveTo(x, y); else ctxWave.lineTo(x, y);
+                    x += sliceWidth;
+                }
+                ctxWave.lineTo(canvasWave.width, canvasWave.height / 2);
+                ctxWave.stroke();
+
+                // Vẽ biểu đồ tần số bắt nhiễu (Spectrum)
+                analyser.getByteFrequencyData(dataArray);
+                ctxSpec.fillStyle = '#0b0f19';
+                ctxSpec.fillRect(0, 0, canvasSpec.width, canvasSpec.height);
+                let barWidth = (canvasSpec.width / bufferLength) * 1.5;
+                let barHeight;
+                let xSpec = 0;
+                for (let i = 0; i < bufferLength; i++) {
+                    barHeight = dataArray[i] / 1.5;
+                    ctxSpec.fillStyle = 'rgb(' + (barHeight + 100) + ', 34, 182)';
+                    ctxSpec.fillRect(xSpec, canvasSpec.height - barHeight, barWidth - 1, barHeight);
+                    xSpec += barWidth;
+                }
+            }
+            drawCharts();
+            window.addEventListener('click', () => { if(audioCtx.state === 'suspended') audioCtx.resume(); });
         </script>
     </body>
     </html>
@@ -109,25 +246,36 @@ app.get('/dashboard', (req, res) => {
 
 app.get('/', (req, res) => res.redirect('/dashboard'));
 
-const server = app.listen(PORT, () => console.log(`Running on ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Analytics Server hoạt động tại cổng: ${PORT}`));
 const wss = new WebSocketServer({ server });
 
+// --- QUẢN LÝ THIẾT BỊ VÀ ĐIỀU PHỐI LỆNH TRONG TỐC ĐỘ CAO ---
 wss.on('connection', (ws) => {
-    ws.isHardware = false;
-   
+    ws.isHardware = false; 
+    
     ws.on('message', async (message, isBinary) => {
         if (isBinary) {
-            ws.isHardware = true;
-            if (isProcessing) return;
+            ws.isHardware = true; 
 
-            // QUY TRÌNH TIMEOUT 5 GIÂY GỐC CỦA BẠN - KHÔNG SỬA ĐỔI ĐỂ TRÁNH TRỄ LŨY KẾ
+            // CƠ CHẾ KHÓA CỨNG TOÀN CỤC: Đang bận xử lý thì loại bỏ hoàn toàn gói tin mới
+            if (isProcessing) return; 
+
+            // Khởi tạo phiên thu âm mới khi phát hiện âm thanh lớn đầu tiên
             if (!recordingTimers.has(ws)) {
                 audioBuffers.set(ws, []);
-                broadcastToMonitor({ state: '🔴 ĐANG THU LỆNH', buffer: 0, log: '🎙️ Bắt đầu ghi âm câu lệnh...' });
-               
+                
+                broadcastToMonitor({
+                    type: 'MONITOR_UPDATE',
+                    state: '🔴 ĐANG THU LỆNH CHÍNH',
+                    bufferLength: 0,
+                    log: '🔊 Kích hoạt thành công! Đang thu âm câu lệnh điều khiển (Giới hạn 4.5 giây)...',
+                    logType: 'success'
+                });
+
+                // Cài đặt thời gian nén gói dữ liệu (Chỉ thu âm 4.5 giây để tối ưu tốc độ mạng và giảm tải cho Gemini)
                 let timer = setTimeout(() => {
                     processCommand(ws);
-                }, 5000);
+                }, 4500);
                 recordingTimers.set(ws, timer);
             }
 
@@ -135,21 +283,34 @@ wss.on('connection', (ws) => {
             bufferList.push(Buffer.from(message));
             audioBuffers.set(ws, bufferList);
 
-            // Forward nguyên bản data nhị phân về giao diện Client để vẽ đồ thị / phát Live nhanh nhất
+            // Đẩy ngược dữ liệu nhị phân về trang dashboard hiển thị trực quan dữ liệu thực tế
             wss.clients.forEach((client) => {
                 if (client !== ws && client.readyState === 1 && !client.isHardware) {
                     client.send(message);
                 }
             });
 
-            if (bufferList.length % 10 === 0) {
-                broadcastToMonitor({ buffer: bufferList.length });
+            if (bufferList.length % 8 === 0) {
+                broadcastToMonitor({
+                    type: 'MONITOR_UPDATE',
+                    state: '🔴 ĐANG THU LỆNH CHÍNH',
+                    bufferLength: bufferList.length
+                });
             }
         } else {
-            if (message.toString() === "RESET_STATE") {
-                isProcessing = false;
-                broadcastToMonitor({ state: '🟢 SẴN SÀNG', buffer: 0, log: '🔓 Hệ thống rảnh.' });
-            }
+            // Xử lý chu kỳ trạng thái mở khóa từ xa do ESP32 phát lên bằng Text
+            try {
+                if (message.toString() === "RESET_STATE") {
+                    isProcessing = false; // Mở khóa hoàn toàn hệ thống
+                    broadcastToMonitor({
+                        type: 'MONITOR_UPDATE',
+                        state: '🟢 HỆ THỐNG SẴN SÀNG',
+                        bufferLength: 0,
+                        log: '🔓 Đã giải phóng tài nguyên. Sẵn sàng quét âm lượng vòng lặp mới.',
+                        logType: 'info'
+                    });
+                }
+            } catch(e) {}
         }
     });
 
@@ -160,9 +321,17 @@ wss.on('connection', (ws) => {
     });
 });
 
+// --- BIÊN DỊCH CÂU LỆNH VỚI GEMINI API ---
 async function processCommand(ws) {
-    isProcessing = true;
-    broadcastToMonitor({ state: '⚙️ XỬ LÝ LỆNH...', log: '⚡ Đang gửi dữ liệu sang Gemini AI...' });
+    isProcessing = true; // BẬT KHÓA KHÔNG NHẬN THÊM YÊU CẦU TRÙNG LẶP
+
+    broadcastToMonitor({ 
+        type: 'MONITOR_UPDATE', 
+        state: '⚙️ ĐANG BIÊN DỊCH CÂU LỆNH', 
+        bufferLength: 0, 
+        log: '⏱️ Hết thời gian thu âm an toàn! Đang phân tích giọng nói...', 
+        logType: 'warn' 
+    });
 
     let pcmBuffers = audioBuffers.get(ws) || [];
     audioBuffers.delete(ws);
@@ -179,19 +348,18 @@ async function processCommand(ws) {
         const wavBuffer = createWavBuffer(pcmBuffers, 16000);
         const base64Audio = wavBuffer.toString('base64');
 
-        // SỬ DỤNG STRICT SCHEMA ĐỂ ĐẢM BẢO CHÍNH XÁC KẾT QUẢ TRẢ VỀ
         const response = await ai.models.generateContent({
-            model: 'gemini-1.5-flash',
+            model: 'gemini-2.5-flash',
             contents: [
                 { inlineData: { mimeType: 'audio/wav', data: base64Audio } },
                 {
-                    text: `Phân tích âm thanh điều khiển nhà thông minh bằng tiếng Việt:
-                    - Nếu muốn BẬT thiết bị/đèn/led -> trả về led = 1 và một câu text ngắn gọn.
-                    - Nếu muốn TẮT thiết bị/đèn/led -> trả về led = 0 và một câu text ngắn gọn.
-                    - Khác hoặc không rõ -> trả về led = -1 và một câu phản hồi tương ứng.`
+                    text: `Bạn là trợ lý điều khiển thiết bị thông minh bằng tiếng Việt. Hãy lắng nghe đoạn âm thanh trên.
+                    - Nếu họ muốn BẬT đèn hoặc thiết bị (ví dụ: "bật đèn", "mở đèn", "bật led"), trả về led = 1 và một câu text thông báo ngắn gọn tương ứng.
+                    - Nếu họ muốn TẮT đèn hoặc thiết bị (ví dụ: "tắt đèn", "tắt led"), trả về led = 0 và một câu text thông báo ngắn gọn tương ứng.
+                    - Nếu không nghe thấy câu lệnh điều khiển nào rõ ràng hoặc âm thanh rác, trả về led = -1 và câu text giải thích.`
                 }
             ],
-            config: {
+            config: { 
                 responseMimeType: "application/json",
                 responseSchema: {
                     type: Type.OBJECT,
@@ -204,24 +372,25 @@ async function processCommand(ws) {
             }
         });
 
-        let cleanText = response.text ? response.text.trim() : "{\"led\":-1,\"text\":\"Error\"}";
+        let cleanText = response.text ? response.text.trim() : null;
         const resultJson = JSON.parse(cleanText);
 
         if (ws.readyState === 1) {
             if (resultJson.led === 1) {
                 ws.send("LED2_ON");
-                broadcastToMonitor({ log: '🟢 Kết quả: BẬT LED D2', ai: resultJson.text });
+                broadcastToMonitor({ type: 'MONITOR_UPDATE', state: '⚙️ ĐANG XỬ LÝ LỆNH...', bufferLength: 0, log: '🚀 THÀNH CÔNG: Đã ra lệnh BẬT đèn D2.', logType: 'success', aiResponse: resultJson.text });
             } else if (resultJson.led === 0) {
                 ws.send("LED2_OFF");
-                broadcastToMonitor({ log: '🔴 Kết quả: TẮT LED D2', ai: resultJson.text });
+                broadcastToMonitor({ type: 'MONITOR_UPDATE', state: '⚙️ ĐANG XỬ LÝ LỆNH...', bufferLength: 0, log: '🚀 THÀNH CÔNG: Đã ra lệnh TẮT đèn D2.', logType: 'success', aiResponse: resultJson.text });
             } else {
                 ws.send("CMD_DONE");
-                broadcastToMonitor({ log: '⚠️ Lệnh không rõ ràng', ai: resultJson.text });
+                broadcastToMonitor({ type: 'MONITOR_UPDATE', state: '⚙️ ĐANG XỬ LÝ LỆNH...', bufferLength: 0, log: '⚠️ KHÔNG KHỚP LỆNH: Giữ nguyên trạng thái.', logType: 'warn', aiResponse: resultJson.text });
             }
         }
+
     } catch (error) {
         if (ws.readyState === 1) ws.send("CMD_DONE");
-        broadcastToMonitor({ log: `❌ Lỗi API: ${error.message}` });
+        broadcastToMonitor({ type: 'MONITOR_UPDATE', state: '🟢 LỖI HỆ THỐNG', bufferLength: 0, log: `Lỗi kết nối API Cloud: ${error.message}`, logType: 'error' });
         isProcessing = false;
     }
 }
