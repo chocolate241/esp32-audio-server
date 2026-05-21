@@ -376,7 +376,7 @@ async function processCommand(ws) {
 
         // ĐỒNG BỘ: Chuyển đổi sang gemini-1.5-flash để mở rộng hạn mức quota free rộng rãi hơn
         const response = await ai.models.generateContent({
-            model: 'gemini-3.1-flash-lite',
+            model: 'gemini-1.5-flash',
             contents: [
                 { inlineData: { mimeType: 'audio/wav', data: base64Audio } },
                 {
