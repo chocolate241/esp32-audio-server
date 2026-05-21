@@ -1,7 +1,13 @@
 const express = require('express');
 const { WebSocketServer } = require('ws');
+const { GoogleGenAI } = require('@google/genai');
+require('dotenv').config();
+
 const app = express();
 const PORT = process.env.PORT || 8080;
+
+// Khởi tạo Gemini Client (Dùng API Key trong file .env hoặc cấu hình Render)
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 app.get('/nghe', (req, res) => {
     res.send(`
@@ -26,6 +32,11 @@ app.get('/nghe', (req, res) => {
             
             #status { margin: 15px 0; font-size: 16px; font-weight: bold; color: #ff9f43; }
             canvas { background: #1f2833; border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.6); display: none; margin: 0 auto; border: 1px solid #1f2833; }
+
+            /* Khu vực hiển thị câu trả lời của Gemini */
+            .gemini-box { max-width: 600px; margin: 20px auto; background: #1f2833; border: 1px solid #ff9f4333; border-radius: 10px; padding: 15px; text-align: left; }
+            .gemini-title { font-size: 14px; color: #ff9f43; font-weight: bold; text-transform: uppercase; margin-bottom: 8px; display: flex; align-items: center; gap: 5px; }
+            .gemini-text { color: #ffffff; font-size: 16px; line-height: 1.5; min-height: 24px; }
         </style>
     </head>
     <body>
@@ -54,6 +65,12 @@ app.get('/nghe', (req, res) => {
             </div>
         </div>
 
+        <!-- Khung hiển thị câu trả lời của Gemini AI -->
+        <div class="gemini-box">
+            <div class="gemini-title">🤖 Trợ lý Gemini AI Phản hồi:</div>
+            <div id="geminiResponse" class="gemini-text">Đang chờ âm thanh lệnh từ ESP32...</div>
+        </div>
+
         <canvas id="visualizer" width="600" height="160"></canvas>
 
         <script>
@@ -62,7 +79,6 @@ app.get('/nghe', (req, res) => {
             let analyser;
             let nextStartTime = 0;
             
-            // Các biến phục vụ thống kê số liệu
             let packetCount = 0;
             let lastPacketTime = Date.now();
             let sampleRateCounter = 0;
@@ -72,8 +88,8 @@ app.get('/nghe', (req, res) => {
             const statusDiv = document.getElementById('status');
             const canvas = document.getElementById('visualizer');
             const canvasCtx = canvas.getContext('2d');
+            const geminiResponse = document.getElementById('geminiResponse');
 
-            // Các thẻ hiển thị số liệu
             const valPeak = document.getElementById('valPeak');
             const valSample = document.getElementById('valSample');
             const valPackets = document.getElementById('valPackets');
@@ -100,45 +116,53 @@ app.get('/nghe', (req, res) => {
                 };
 
                 ws.onmessage = (event) => {
+                    // Nhận phản hồi văn bản JSON của Gemini từ Server gửi xuống web
+                    if (typeof event.data === 'string') {
+                        try {
+                            const resJson = JSON.parse(event.data);
+                            if(resJson.text) {
+                                geminiResponse.innerText = resJson.text;
+                            }
+                        } catch(e) { 
+                            // Bỏ qua text thô
+                        }
+                        return;
+                    }
+
                     if (event.data.byteLength === 0) return;
 
-                    // 1. Phân tích số liệu gói tin bằng Int32Array (Sửa từ Int16Array sang Int32Array)
                     packetCount++;
                     let now = Date.now();
                     let delta = now - lastPacketTime;
                     lastPacketTime = now;
                     
+                    // Xử lý đúng dải 32-bit theo thiết bị ESP32 của bạn
                     let int32Array = new Int32Array(event.data);
                     let samplesCount = int32Array.length;
                     sampleRateCounter += samplesCount;
 
-                    // Tính toán Biên độ đỉnh (Peak Amplitude) dựa trên dải 32-bit (Max: 2147483648)
                     let maxVal = 0;
                     for (let i = 0; i < samplesCount; i++) {
                         let absVal = Math.abs(int32Array[i]);
                         if (absVal > maxVal) maxVal = absVal;
                     }
-                    // Chia cho 2147483648 thay vì 32768
                     let peakPercentage = ((maxVal / 2147483648) * 100).toFixed(1);
 
-                    // Cập nhật số liệu lên màn hình sau mỗi gói
                     valPackets.innerText = packetCount;
                     valPeak.innerText = peakPercentage + "%";
                     valLatency.innerText = delta + "ms";
 
-                    // Cập nhật tần số mẫu thực tế (mỗi giây tính toán lại 1 lần)
                     if (now - lastSecTime >= 1000) {
                         valSample.innerText = sampleRateCounter + " Hz";
                         sampleRateCounter = 0;
                         lastSecTime = now;
                     }
 
-                    // 2. Xử lý giải mã từ 32-bit và đẩy vào mạch phát âm thanh chống giật
+                    // Giải mã âm thanh 32-bit nguyên bản sang Float [-1.0, 1.0] để phát ra loa mượt mà
                     let audioBuffer = audioCtx.createBuffer(1, samplesCount, 16000);
                     let channelData = audioBuffer.getChannelData(0);
                     
                     for (let i = 0; i < samplesCount; i++) {
-                        // Chuyển đổi dữ liệu 32-bit nguyên bản sang Float [-1.0, 1.0]
                         channelData[i] = int32Array[i] / 2147483648.0;
                     }
                     
@@ -156,7 +180,6 @@ app.get('/nghe', (req, res) => {
                 };
             };
 
-            // Vẽ đồ thị sóng âm Radar Cyan chuyên nghiệp
             function draw() {
                 requestAnimationFrame(draw);
                 const bufferLength = analyser.frequencyBinCount;
@@ -166,7 +189,6 @@ app.get('/nghe', (req, res) => {
                 canvasCtx.fillStyle = '#1f2833';
                 canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
                 
-                // Vẽ lưới tọa độ âm thanh nền (Grid)
                 canvasCtx.strokeStyle = '#45f3ff11';
                 canvasCtx.lineWidth = 1;
                 for(let i = 0; i < canvas.width; i += 40) {
@@ -176,7 +198,6 @@ app.get('/nghe', (req, res) => {
                     canvasCtx.beginPath(); canvasCtx.moveTo(0, i); canvasCtx.lineTo(canvas.width, i); canvasCtx.stroke();
                 }
 
-                // Vẽ đường sóng chính
                 canvasCtx.lineWidth = 2.5;
                 canvasCtx.strokeStyle = '#66fcf1';
                 canvasCtx.shadowBlur = 4;
@@ -195,7 +216,7 @@ app.get('/nghe', (req, res) => {
                 }
                 canvasCtx.lineTo(canvas.width, canvas.height / 2);
                 canvasCtx.stroke();
-                canvasCtx.shadowBlur = 0; // reset shadow
+                canvasCtx.shadowBlur = 0;
             }
         </script>
     </body>
@@ -206,12 +227,114 @@ app.get('/nghe', (req, res) => {
 const server = app.listen(PORT, () => console.log(`Analytics Server đang chạy tại cổng: ${PORT}`));
 const wss = new WebSocketServer({ server });
 
+const audioBuffers = new Map();
+const silenceTimers = new Map();
+
 wss.on('connection', (ws) => {
-    ws.on('message', (message) => {
-        wss.clients.forEach((client) => {
-            if (client !== ws && client.readyState === 1) {
-                client.send(message);
-            }
-        });
+    console.log('🔴 Có thiết bị kết nối vào hệ thống WebSocket');
+    audioBuffers.set(ws, []);
+
+    ws.on('message', async (message, isBinary) => {
+        if (isBinary) {
+            let bufferList = audioBuffers.get(ws) || [];
+            bufferList.push(Buffer.from(message));
+            audioBuffers.set(ws, bufferList);
+
+            // Forward âm thanh nhị phân sang Trình duyệt web
+            wss.clients.forEach((client) => {
+                if (client !== ws && client.readyState === 1) {
+                    client.send(message);
+                }
+            });
+
+            // Sau 1.5 giây tĩnh lặng kể từ gói âm thanh cuối, gọi Gemini xử lý âm thanh tích lũy
+            clearTimeout(silenceTimers.get(ws));
+            let timer = setTimeout(() => {
+                processAudioAndCommand(ws);
+            }, 1500);
+            silenceTimers.set(ws, timer);
+        }
+    });
+
+    ws.on('close', () => {
+        audioBuffers.delete(ws);
+        clearTimeout(silenceTimers.get(ws));
     });
 });
+
+// Hàm tạo cấu trúc file WAV 32-bit PCM chuẩn cho Gemini đọc
+function createWavBuffer(pcmBuffers, sampleRate = 16000) {
+    let pcmBuffer = Buffer.concat(pcmBuffers);
+    let wavBuffer = Buffer.alloc(44 + pcmBuffer.length);
+    wavBuffer.write('RIFF', 0);
+    wavBuffer.writeUInt32LE(36 + pcmBuffer.length, 4);
+    wavBuffer.write('WAVE', 8);
+    wavBuffer.write('fmt ', 12);
+    wavBuffer.writeUInt32LE(16, 16);
+    wavBuffer.writeUInt16LE(1, 20); // Định dạng PCM
+    wavBuffer.writeUInt16LE(1, 22); // Mono (1 kênh)
+    wavBuffer.writeUInt32LE(sampleRate, 24);
+    wavBuffer.writeUInt32LE(sampleRate * 4, 28); // SampleRate * 4 bytes (32-bit)
+    wavBuffer.writeUInt16LE(4, 32);              // 4 bytes per sample
+    wavBuffer.writeUInt16LE(32, 34);             // 32 bits per sample
+    wavBuffer.write('data', 36);
+    wavBuffer.writeUInt32LE(pcmBuffer.length, 40);
+    pcmBuffer.copy(wavBuffer, 44);
+    return wavBuffer;
+}
+
+async function processAudioAndCommand(ws) {
+    let pcmBuffers = audioBuffers.get(ws) || [];
+    if (pcmBuffers.length === 0) return;
+    
+    audioBuffers.set(ws, []);
+    console.log("⚡ Đang phân tích giọng nói bằng Gemini AI...");
+
+    try {
+        const wavBuffer = createWavBuffer(pcmBuffers, 16000);
+        const base64Audio = wavBuffer.toString('base64');
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: [
+                { inlineData: { mimeType: 'audio/wav', data: base64Audio } },
+                {
+                    text: `Bạn là trợ lý điều khiển thiết bị thông minh bằng tiếng Việt. Hãy lắng nghe đoạn âm thanh trên.
+                    - Nếu họ muốn BẬT đèn hoặc thiết bị (ví dụ: "bật đèn", "mở đèn", "bật led"), trả về JSON: {"led": 1, "text": "Đang bật đèn cho bạn"}.
+                    - Nếu họ muốn TẮT đèn hoặc thiết bị (ví dụ: "tắt đèn", "tắt led"), trả về JSON: {"led": 0, "text": "Đã tắt đèn xong"}.
+                    - Nếu không có lệnh rõ ràng hoặc chỉ là tiếng động, trả về JSON: {"led": -1, "text": "Tôi nghe không rõ lệnh hoặc không có yêu cầu điều khiển"}.
+                    CHỈ TRẢ VỀ JSON THÔ, KHÔNG ĐƯỢC CHÈN MARKDOWN HOẶC CHỮ THỪA.`
+                }
+            ],
+            config: { responseMimeType: "application/json" }
+        });
+
+        // Xử lý bóc tách text phòng trường hợp AI trả về text có chứa ký tự lạ
+        let cleanText = response.text.trim();
+        if (cleanText.startsWith("```json")) cleanText = cleanText.replace(/```json|```/g, "").trim();
+        
+        const resultJson = JSON.parse(cleanText);
+        console.log("🤖 Phản hồi:", resultJson);
+
+        // 1. Đồng bộ kết quả văn bản lên giao diện Trình duyệt Web
+        wss.clients.forEach((client) => {
+            if (client.readyState === 1) {
+                client.send(JSON.stringify(resultJson)); 
+            }
+        });
+
+        // 2. Gửi lệnh text điều khiển ngược về cho chính client ESP32 đang kết nối
+        if (ws.readyState === 1) {
+            if (resultJson.led === 1) {
+                ws.send("LED2_ON");
+            } else if (resultJson.led === 0) {
+                ws.send("LED2_OFF");
+            }
+        }
+        
+    } catch (error) {
+        console.error("❌ Lỗi xử lý Gemini:", error);
+    }
+}
+
+
