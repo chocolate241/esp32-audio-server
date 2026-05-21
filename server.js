@@ -184,7 +184,7 @@ wss.on('connection', (ws) => {
                 let isScanning = isScanningMap.get(ws);
                 
                 // Thu thập đủ khoảng ~1.5 giây dữ liệu âm thanh (khoảng 25-30 gói nhỏ từ ESP32)
-                if (bufferList.length >= 25) {
+                if (bufferList.length >= 45) {
                     if (!isScanning) {
                         // Khóa mạch lại để tiến hành phân tích, cắt mảng gối đầu chống mất từ
                         let pcmToScan = [...bufferList];
