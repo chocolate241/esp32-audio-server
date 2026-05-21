@@ -120,16 +120,16 @@ ws.onmessage = (event) => {
     let delta = now - lastPacketTime;
     lastPacketTime = now;
     
-    // Nhận dữ liệu dưới dạng Int16Array (Mỗi mẫu chiếm 2 bytes, khớp với cấu hình 16-bit mới của ESP32)
-    let int16Array = new Int16Array(event.data);
-    let samplesCount = int16Array.length;
+    // Nhận dữ liệu dưới dạng Int32Array (Mỗi mẫu chiếm 2 bytes, khớp với cấu hình 16-bit mới của ESP32)
+    let Int32Array = new Int32Array(event.data);
+    let samplesCount = Int32Array.length;
     sampleRateCounter += samplesCount;
 
 
     // Tính toán Biên độ đỉnh (Peak Amplitude) chính xác cho hệ 16-bit
     let maxVal = 0;
     for (let i = 0; i < samplesCount; i++) {
-        let absVal = Math.abs(int16Array[i]);
+        let absVal = Math.abs(Int32Array[i]);
         if (absVal > maxVal) maxVal = absVal;
     }
     let peakPercentage = ((maxVal / 32768) * 100).toFixed(1);
@@ -154,7 +154,7 @@ ws.onmessage = (event) => {
     let channelData = audioBuffer.getChannelData(0);
    
     for (let i = 0; i < samplesCount; i++) {
-        channelData[i] = int16Array[i] / 32768.0; // Chuẩn hóa biên độ về khoảng [-1.0, 1.0]
+        channelData[i] = Int32Array[i] / 32768.0; // Chuẩn hóa biên độ về khoảng [-1.0, 1.0]
     }
    
     let source = audioCtx.createBufferSource();
