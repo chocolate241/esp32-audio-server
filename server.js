@@ -127,7 +127,7 @@ app.get('/dashboard', (req, res) => {
                 if (type === 'success') color = 'text-emerald-400 font-semibold';
                 if (type === 'warn') color = 'text-amber-400';
                 if (type === 'error') color = 'text-red-400 font-bold';
-                logBox.innerHTML += `<div class="\${color}">[\${timeStr}] \${message}</div>`;
+                logBox.innerHTML += '<div class="' + color + '">[' + timeStr + '] ' + message + '</div>';
                 logBox.scrollTop = logBox.scrollHeight;
             }
 
