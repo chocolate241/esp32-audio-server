@@ -6,12 +6,14 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 8080;
 
+// Khởi tạo SDK Gemini mới nhất
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-// Quản lý trạng thái kết nối của từng thiết bị: 'WAIT_WAKE' hoặc 'RECORDING'
-const deviceStates = new Map();
-const audioBuffers = new Map();
-const recordingTimers = new Map();
+// Quản lý trạng thái và bộ đệm của từng kết nối
+const deviceStates = new Map();     // 'WAIT_WAKE' hoặc 'RECORDING'
+const audioBuffers = new Map();     // Nơi lưu trữ các Buffer nhị phân từ ESP32
+const recordingTimers = new Map();  // Quản lý thời gian đếm ngược 5 giây câu lệnh
+const isScanningMap = new Map();    // Khóa chống spam gọi API trùng lặp khi đang xử lý
 
 app.get('/nghe', (req, res) => {
     res.send(`
@@ -155,48 +157,67 @@ const server = app.listen(PORT, () => console.log(`Analytics Server đang chạy
 const wss = new WebSocketServer({ server });
 
 wss.on('connection', (ws) => {
-    console.log('🔴 Có thiết bị kết nối vào hệ thống WebSocket');
+    console.log('🟢 [WS] Thiết bị đã kết nối thành công!');
     
-    // Mặc định ban đầu cấu hình thiết bị ở chế độ chờ Wake Word
+    // Khởi tạo các trạng thái ban đầu cho kết nối mới
     deviceStates.set(ws, 'WAIT_WAKE');
     audioBuffers.set(ws, []);
+    isScanningMap.set(ws, false);
 
     ws.on('message', async (message, isBinary) => {
         if (isBinary) {
             let state = deviceStates.get(ws) || 'WAIT_WAKE';
             let bufferList = audioBuffers.get(ws) || [];
+            
             bufferList.push(Buffer.from(message));
             audioBuffers.set(ws, bufferList);
 
-            // Forward luồng dữ liệu thô sang trình duyệt hiển thị biểu đồ trực quan
+            // Gửi luồng dữ liệu sang trình duyệt phục vụ biểu đồ trực quan
             wss.clients.forEach((client) => {
                 if (client !== ws && client.readyState === 1) {
                     client.send(message);
                 }
             });
 
+            // LOGIC CHẾ ĐỘ CHỜ WAKE WORD
             if (state === 'WAIT_WAKE') {
-                // Ở chế độ chờ: Khi tích đủ tầm ~1.5 giây âm thanh nền, tiến hành quét từ khóa ẩn
-                if (bufferList.length >= 15) { 
-                    let pcmToScan = [...bufferList];
-                    // Giữ lại một nửa bộ đệm gối đầu để chống mất từ khóa giữa các gói băm
-                    audioBuffers.set(ws, bufferList.slice(7)); 
-                    checkWakeWord(ws, pcmToScan);
+                let isScanning = isScanningMap.get(ws);
+                
+                // Thu thập đủ khoảng ~1.5 giây dữ liệu âm thanh (khoảng 25-30 gói nhỏ từ ESP32)
+                if (bufferList.length >= 25) {
+                    if (!isScanning) {
+                        // Khóa mạch lại để tiến hành phân tích, cắt mảng gối đầu chống mất từ
+                        let pcmToScan = [...bufferList];
+                        audioBuffers.set(ws, bufferList.slice(12)); 
+                        
+                        // Kích hoạt quét từ khóa
+                        checkWakeWord(ws, pcmToScan);
+                    } else {
+                        // Nếu Gemini đang bận quét gói trước, thực hiện cuốn chiếu cắt đuôi bộ đệm liên tục
+                        if(bufferList.length > 40) {
+                            audioBuffers.set(ws, bufferList.slice(20));
+                        }
+                    }
                 }
             }
         }
     });
 
     ws.on('close', () => {
+        console.log('🔴 [WS] Thiết bị đã ngắt kết nối.');
         audioBuffers.delete(ws);
         deviceStates.delete(ws);
+        isScanningMap.delete(ws);
         if (recordingTimers.has(ws)) clearTimeout(recordingTimers.get(ws));
         recordingTimers.delete(ws);
     });
 });
 
-// HÀM 1: QUÉT TỪ KHÓA MỚI "HEY GEMINI / HEY GEMI"
+// ==================== HÀM QUÉT TỪ KHÓA CHỦ ĐỘNG ====================
 async function checkWakeWord(ws, pcmBuffers) {
+    isScanningMap.set(ws, true); // Đặt khóa bận
+    console.log("🔍 [WakeWord] Đang kiểm tra âm thanh nền...");
+
     try {
         const wavBuffer = createWavBuffer(pcmBuffers, 16000);
         const base64Audio = wavBuffer.toString('base64');
@@ -205,7 +226,7 @@ async function checkWakeWord(ws, pcmBuffers) {
             model: 'gemini-2.5-flash',
             contents: [
                 { inlineData: { mimeType: 'audio/wav', data: base64Audio } },
-                { text: `Lắng nghe âm thanh ngắn này. Người dùng có gọi cụm từ "hey gemini" hoặc "hey gemi" không? Trả về JSON nghiêm ngặt: {"detected": true} hoặc {"detected": false}.` }
+                { text: `Lắng nghe âm thanh ngắn này. Người dùng có gọi cụm từ "hey gemini" hoặc "hey gemi" không? Hãy bỏ qua các tiếng ồn xung quanh. Trả về cấu trúc JSON nghiêm ngặt: {"detected": true} hoặc {"detected": false}.` }
             ],
             config: { 
                 responseMimeType: "application/json",
@@ -218,42 +239,54 @@ async function checkWakeWord(ws, pcmBuffers) {
         });
 
         const result = JSON.parse(response.text.trim());
+        console.log(`📊 [WakeWord] Kết quả phân tích: ${result.detected}`);
+
         if (result.detected === true) {
-            console.log("🔓 KÍCH HOẠT: Phát hiện tiếng 'Hey Gemini'! Chuyển sang ghi âm câu lệnh...");
+            console.log("🔓 [KÍCH HOẠT] Phát hiện chính xác cụm từ 'Hey Gemini'! Chuyển mạch thu âm lệnh...");
             
             deviceStates.set(ws, 'RECORDING');
-            audioBuffers.set(ws, []); // Reset sạch bộ đệm để hứng câu lệnh chính xác
+            audioBuffers.set(ws, []); // Xóa sạch dữ liệu chờ để đón nhận câu lệnh mới tinh
 
-            // Gửi tín hiệu điều khiển phần cứng bắt đầu mở cửa sổ lệnh sáng đèn LED D32
+            // Phát lệnh bật sáng đèn LED D32 trên ESP32
             if (ws.readyState === 1) ws.send("WAKE_UP");
 
-            // Đồng bộ trạng thái giao diện web
-            sendTextToWeb({ status: "🔴 ĐANG NGHE CÂU LỆNH CHÍNH (5S)...", text: "Đang lắng nghe lệnh điều khiển của bạn..." });
+            // Cập nhật trạng thái trên trang web theo dõi
+            sendTextToWeb({ status: "🔴 ĐANG NGHE LỆNH ĐIỀU KHIỂN (5S)...", text: "Hệ thống đã kích hoạt! Mời bạn đọc lệnh (Bật/Tắt đèn)..." });
 
-            // Đặt thời gian đóng cửa sổ thu âm sau đúng 5 giây
+            // Hẹn giờ đúng 5 giây sau sẽ tự động khóa và biên dịch câu lệnh chính
             let timer = setTimeout(() => {
                 processCommand(ws);
             }, 5000);
             recordingTimers.set(ws, timer);
         }
     } catch (e) {
-        // Bỏ qua lỗi bắt nhiễu trùng lặp nền
+        console.error("⚠️ [WakeWord] Lỗi quét dữ liệu nền hoặc lỗi JSON.");
+    } finally {
+        // Chỉ mở khóa quét tiếp nếu trạng thái vẫn đang là WAIT_WAKE
+        if (deviceStates.get(ws) === 'WAIT_WAKE') {
+            isScanningMap.set(ws, false);
+        }
     }
 }
 
-// HÀM 2: BIÊN DỊCH VÀ XỬ LÝ CÂU LỆNH CHÍNH CHUYỂN MẠCH THIẾT BỊ
+// ==================== HÀM BIÊN DỊCH CÂU LỆNH CHÍNH ====================
 async function processCommand(ws) {
+    console.log("🔒 [Ghi Âm] Hết 5 giây. Khóa cổng thu âm và gửi câu lệnh lên Gemini...");
+    sendTextToWeb({ status: "🤖 GEMINI ĐANG PHÂN TÍCH CÂU LỆNH...", text: "Vui lòng đợi giây lát..." });
+
     let pcmBuffers = audioBuffers.get(ws) || [];
-    deviceStates.set(ws, 'WAIT_WAKE'); // Đưa thiết bị quay về chế độ chờ quét từ khóa ngay lập tức
+    
+    // Đưa thiết bị quay về trạng thái chờ từ khóa ngay lập tức để giải phóng tài nguyên
+    deviceStates.set(ws, 'WAIT_WAKE');
     audioBuffers.set(ws, []);
+    isScanningMap.set(ws, false);
 
     if (pcmBuffers.length === 0) {
+        console.log("⚠️ [Ghi Âm] Bộ đệm trống, không có âm thanh lệnh.");
         if (ws.readyState === 1) ws.send("GO_SLEEP");
+        sendTextToWeb({ status: "HỆ THỐNG ONLINE - ĐANG QUÉT WAKE WORD 🟢", text: "Không nhận được âm thanh câu lệnh." });
         return;
     }
-
-    console.log("⚡ Hết 5 giây lệnh. Đang gửi dữ liệu phân tích điều khiển...");
-    sendTextToWeb({ status: "🤖 GEMINI ĐANG XỬ LÝ LỆNH...", text: "Đang phân tích cú pháp câu lệnh..." });
 
     try {
         const wavBuffer = createWavBuffer(pcmBuffers, 16000);
@@ -265,9 +298,9 @@ async function processCommand(ws) {
                 { inlineData: { mimeType: 'audio/wav', data: base64Audio } },
                 {
                     text: `Bạn là trợ lý điều khiển thiết bị thông minh bằng tiếng Việt. Hãy lắng nghe đoạn âm thanh trên.
-                    - Nếu họ muốn BẬT đèn hoặc thiết bị (ví dụ: "bật đèn", "mở đèn", "bật led", "bật led d2"), trả về led = 1 và một câu text phản hồi thân thiện tương ứng.
-                    - Nếu họ muốn TẮT đèn hoặc thiết bị (ví dụ: "tắt đèn", "tắt led"), trả về led = 0 và một câu text phản hồi thân thiện tương ứng.
-                    - Nếu không nghe rõ hoặc không có lệnh điều khiển liên quan, trả về led = -1 và câu text giải thích.`
+                    - Nếu họ muốn BẬT đèn hoặc thiết bị (ví dụ: "bật đèn", "mở đèn", "bật led"), trả về led = 1 và một câu text thông báo phản hồi ngắn gọn tương ứng.
+                    - Nếu họ muốn TẮT đèn hoặc thiết bị (ví dụ: "tắt đèn", "tắt led"), trả về led = 0 và một câu text thông báo phản hồi ngắn gọn tương ứng.
+                    - Nếu không nghe thấy câu lệnh điều khiển nào rõ ràng, trả về led = -1 và câu text giải thích.`
                 }
             ],
             config: { 
@@ -284,31 +317,39 @@ async function processCommand(ws) {
         });
 
         let cleanText = response.text ? response.text.trim() : null;
-        if (!cleanText) return;
+        if (!cleanText) throw new Error("Phản hồi rỗng");
 
         const resultJson = JSON.parse(cleanText);
-        console.log("📊 Cấu trúc kết quả:", resultJson);
+        console.log("📊 [Kết Quả Lệnh] Gemini phản hồi cấu trúc:", resultJson);
 
-        // Phát lệnh xử lý phần cứng trả lại cho ESP32 và tắt đèn báo D32
+        // Thực thi điều khiển phần cứng của mạch ESP32 thông qua tín hiệu truyền về
         if (ws.readyState === 1) {
-            if (resultJson.led === 1) ws.send("LED2_ON");
-            else if (resultJson.led === 0) ws.send("LED2_OFF");
-            else ws.send("GO_SLEEP");
+            if (resultJson.led === 1) {
+                ws.send("LED2_ON");
+                console.log("🚀 [Điều Khiển] Đã gửi lệnh bật thiết bị: LED2_ON");
+            } else if (resultJson.led === 0) {
+                ws.send("LED2_OFF");
+                console.log("🚀 [Điều Khiển] Đã gửi lệnh tắt thiết bị: LED2_OFF");
+            } else {
+                ws.send("GO_SLEEP");
+                console.log("🚀 [Điều Khiển] Không khớp lệnh, tắt đèn trạng thái D32.");
+            }
         }
 
-        // Cập nhật kết quả cuối cùng lên Web Monitor
+        // Cập nhật kết quả lên giao diện Web Monitor
         sendTextToWeb({
             status: "HỆ THỐNG ONLINE - ĐANG QUÉT WAKE WORD 🟢",
             text: resultJson.text
         });
 
     } catch (error) {
-        console.error("❌ Lỗi xử lý tại tầng Gemini:", error);
+        console.error("❌ [Lỗi Hệ Thống] Tầng xử lý Gemini:", error);
         if (ws.readyState === 1) ws.send("GO_SLEEP");
-        sendTextToWeb({ status: "HỆ THỐNG ONLINE - ĐANG QUÉT WAKE WORD 🟢", text: "Lỗi hệ thống hoặc không nhận diện được giọng nói." });
+        sendTextToWeb({ status: "HỆ THỐNG ONLINE - ĐANG QUÉT WAKE WORD 🟢", text: "Lỗi kết nối API hoặc không nhận dạng được lệnh." });
     }
 }
 
+// Hàm cấu trúc hóa mảng byte nhị phân thành file .WAV chuẩn PCM 16-bit
 function createWavBuffer(pcmBuffers, sampleRate = 16000) {
     let pcmBuffer = Buffer.concat(pcmBuffers);
     let wavBuffer = Buffer.alloc(44 + pcmBuffer.length);
@@ -329,6 +370,7 @@ function createWavBuffer(pcmBuffers, sampleRate = 16000) {
     return wavBuffer;
 }
 
+// Hàm đồng bộ phát thông tin lên trình duyệt web giám sát
 function sendTextToWeb(obj) {
     wss.clients.forEach((client) => {
         if (client.readyState === 1) {
@@ -336,5 +378,3 @@ function sendTextToWeb(obj) {
         }
     });
 }
-
-
