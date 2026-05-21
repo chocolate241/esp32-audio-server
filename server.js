@@ -256,7 +256,7 @@ async function processCommand(ws) {
 
         // Bắn API lên Gemini để phân tích giọng nói điều khiển thiết bị
         const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: 'gemini-3.1-flash-lite',
             contents: [
                 { inlineData: { mimeType: 'audio/wav', data: base64Audio } },
                 {
