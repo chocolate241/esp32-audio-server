@@ -6,14 +6,12 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// Khởi tạo SDK Gemini mới nhất
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-// Quản lý trạng thái kết nối
 const audioBuffers = new Map();     
 const recordingTimers = new Map();  
 
-// --- TRANG DASHBOARD THEO DÕI TIẾN ĐỘ CHUYÊN NGHIỆP ---
+// --- DASHBOARD MONITOR ---
 app.get('/dashboard', (req, res) => {
     res.send(`
     <!DOCTYPE html>
@@ -31,7 +29,6 @@ app.get('/dashboard', (req, res) => {
     </head>
     <body class="text-slate-200 font-sans antialiased p-4 md:p-8">
         <div class="max-w-5xl mx-auto space-y-6">
-            
             <header class="flex flex-col md:flex-row md:items-center md:justify-between border-b border-slate-800 pb-4">
                 <div>
                     <h1 class="text-2xl font-bold text-cyan-400">🎙️ Hệ Thống Giám Sát Ngưỡng Âm Thanh</h1>
@@ -81,7 +78,6 @@ app.get('/dashboard', (req, res) => {
                     [Hệ thống] Máy chủ sẵn sàng nhận luồng dữ liệu kích hoạt bằng âm lượng...
                 </div>
             </div>
-
         </div>
 
         <script>
@@ -102,7 +98,7 @@ app.get('/dashboard', (req, res) => {
                 if (type === 'warn') color = 'text-amber-400';
                 if (type === 'error') color = 'text-red-400 font-bold';
                 
-                logBox.innerHTML += \`<div class="\${color}">[\${timeStr}] \${message}</div>\`;
+                logBox.innerHTML += `<div class="\${color}">[\${timeStr}] \${message}</div>`;
                 logBox.scrollTop = logBox.scrollHeight;
             }
 
@@ -160,10 +156,10 @@ app.get('/dashboard', (req, res) => {
 
 app.get('/', (req, res) => res.redirect('/dashboard'));
 
-const server = app.listen(PORT, () => console.log(`Analytics Server đang chạy tại cổng: ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Server đang chạy tại cổng: ${PORT}`));
 const wss = new WebSocketServer({ server });
 
-// ==================== QUẢN LÝ KẾT NỐI WEBSOCKET TIẾT KIỆM COMMAND ====================
+// ==================== QUẢN LÝ KẾT NỐI WEBSOCKET ====================
 wss.on('connection', (ws, req) => {
     console.log('🟢 [WS] Thiết bị vừa kết nối luồng!');
     ws.isHardware = false; 
@@ -171,11 +167,10 @@ wss.on('connection', (ws, req) => {
 
     ws.on('message', async (message, isBinary) => {
         if (isBinary) {
-            // Nếu nhận gói nhị phân đầu tiên -> Đăng ký thiết bị phần cứng kích hoạt thành công
             if (!ws.isHardware) {
                 ws.isHardware = true; 
-                audioBuffers.set(ws, []); // Reset sạch bộ đệm âm thanh ban đầu
-                console.log('✈️ [Hệ thống] ESP32 vượt ngưỡng âm lượng! Khởi động bộ đếm 5 giây nhận lệnh chính.');
+                audioBuffers.set(ws, []); 
+                console.log('✈️ [Hệ thống] ESP32 vượt ngưỡng! Bắt đầu thu âm 5 giây...');
                 
                 broadcastToMonitor({
                     type: 'MONITOR_UPDATE',
@@ -185,7 +180,6 @@ wss.on('connection', (ws, req) => {
                     logType: 'success'
                 });
 
-                // Khởi động đồng hồ đếm ngược 5 giây cứng. Hết 5s lập tức khóa luồng và đẩy đi xử lý 1 lần duy nhất!
                 let timer = setTimeout(() => {
                     processCommand(ws);
                 }, 5000);
@@ -196,14 +190,14 @@ wss.on('connection', (ws, req) => {
             bufferList.push(Buffer.from(message));
             audioBuffers.set(ws, bufferList);
 
-            // Gửi dữ liệu nhị phân về trang Monitor Web để tính độ trễ mạng thời gian thực
+            // Forward dữ liệu lên Monitor Web
             wss.clients.forEach((client) => {
                 if (client !== ws && client.readyState === 1 && !client.isHardware) {
                     client.send(message);
                 }
             });
 
-            if (bufferList.length % 5 === 0) {
+            if (bufferList.length % 2 === 0) { // Giảm log monitor vì kích thước chunk lớn hơn
                 broadcastToMonitor({
                     type: 'MONITOR_UPDATE',
                     state: '🔴 ĐANG NGHE LỆNH CHÍNH',
@@ -214,7 +208,7 @@ wss.on('connection', (ws, req) => {
     });
 
     ws.on('close', () => {
-        console.log(`🔴 [WS] Luồng kết nối đã đóng (${ws.isHardware ? "ESP32 đã về chế độ ngủ" : "Trình duyệt Monitor"}).`);
+        console.log(`🔴 [WS] Luồng kết nối đã đóng (${ws.isHardware ? "ESP32" : "Monitor"}).`);
         audioBuffers.delete(ws);
         if (recordingTimers.has(ws)) clearTimeout(recordingTimers.get(ws));
         recordingTimers.delete(ws);
@@ -224,14 +218,14 @@ wss.on('connection', (ws, req) => {
                 type: 'MONITOR_UPDATE',
                 state: '🔍 CHỜ KÍCH HOẠT ÂM THANH...',
                 bufferLength: 0,
-                log: '🔒 ESP32 đóng kết nối an toàn, quay về chế độ quét âm lượng cục bộ.',
+                log: '🔒 ESP32 đóng kết nối, quay về chế độ quét âm lượng cục bộ.',
                 logType: 'info'
             });
         }
     });
 });
 
-// ==================== HÀM BIÊN DỊCH CÂU LỆNH CHÍNH DUY NHẤT MỘT LẦN ====================
+// ==================== BIÊN DỊCH BẰNG GEMINI AI ====================
 async function processCommand(ws) {
     broadcastToMonitor({ 
         type: 'MONITOR_UPDATE', 
@@ -242,7 +236,7 @@ async function processCommand(ws) {
     });
 
     let pcmBuffers = audioBuffers.get(ws) || [];
-    audioBuffers.set(ws, []); // Xóa sạch ngay bộ đệm để tránh xử lý trùng lặp
+    audioBuffers.set(ws, []); 
 
     if (pcmBuffers.length === 0) {
         if (ws.readyState === 1) ws.send("GO_SLEEP");
@@ -254,16 +248,17 @@ async function processCommand(ws) {
         const wavBuffer = createWavBuffer(pcmBuffers, 16000);
         const base64Audio = wavBuffer.toString('base64');
 
-        // Bắn API lên Gemini để phân tích giọng nói điều khiển thiết bị
         const response = await ai.models.generateContent({
-            model: 'gemini-3.1-flash-lite',
+            model: 'gemini-2.5-flash', // Cập nhật lên model ổn định mặc định
             contents: [
                 { inlineData: { mimeType: 'audio/wav', data: base64Audio } },
                 {
-                    text: `Bạn là trợ lý điều khiển thiết bị thông minh bằng tiếng Việt. Hãy lắng nghe đoạn âm thanh trên.
-                    - Nếu họ muốn BẬT đèn hoặc thiết bị (ví dụ: "bật đèn", "mở đèn", "bật led"), trả về led = 1 và một câu text thông báo phản hồi ngắn gọn tương ứng.
-                    - Nếu họ muốn TẮT đèn hoặc thiết bị (ví dụ: "tắt đèn", "tắt led"), trả về led = 0 và một câu text thông báo phản hồi ngắn gọn tương ứng.
-                    - Nếu không nghe thấy câu lệnh điều khiển nào rõ ràng, trả về led = -1 và câu text giải thích.`
+                    text: `Bạn là một trợ lý nhà thông minh Việt Nam chuyên nghe lệnh thoại thu âm từ micro phần cứng. Tạp âm nền có thể lớn. Hãy tập trung nghe kỹ từ khóa hành động:
+                    - Nếu người dùng nói muốn BẬT/MỞ đèn hoặc thiết bị (Ví dụ: "bật đèn", "bật led", "bật d2", "mở đèn", "sáng đèn"), hãy trả về led = 1.
+                    - Nếu người dùng nói muốn TẮT đèn hoặc thiết bị (Ví dụ: "tắt đèn", "tắt led", "tắt d2", "cúp đèn"), hãy trả về led = 0.
+                    - Nếu âm thanh chỉ là tiếng ồn hoặc không nghe rõ khẩu lệnh hành động nào, trả về led = -1.
+                    
+                    Trả về cấu trúc JSON chính xác theo Schema.`
                 }
             ],
             config: { 
@@ -280,7 +275,7 @@ async function processCommand(ws) {
         });
 
         let cleanText = response.text ? response.text.trim() : null;
-        if (!cleanText || cleanText.startsWith("<!DOCTYPE")) throw new Error("Mất kết nối hoặc lỗi dịch từ mô hình Google.");
+        if (!cleanText) throw new Error("Mô hình không trả về dữ liệu.");
 
         const resultJson = JSON.parse(cleanText);
 
@@ -298,8 +293,9 @@ async function processCommand(ws) {
         }
 
     } catch (error) {
+        console.error(error);
         if (ws.readyState === 1) ws.send("GO_SLEEP");
-        broadcastToMonitor({ type: 'MONITOR_UPDATE', state: '🔍 CHỜ KÍCH HOẠT ÂMTHANH...', bufferLength: 0, log: `Lỗi biên dịch câu lệnh chính từ API: ${error.message}`, logType: 'error' });
+        broadcastToMonitor({ type: 'MONITOR_UPDATE', state: '🔍 CHỜ KÍCH HOẠT ÂM THANH...', bufferLength: 0, log: `Lỗi biên dịch câu lệnh chính từ API: ${error.message}`, logType: 'error' });
     }
 }
 
