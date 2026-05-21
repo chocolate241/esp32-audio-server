@@ -8,7 +8,6 @@ const PORT = process.env.PORT || 8080;
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-// Quản lý trạng thái hệ thống
 let isProcessing = false; 
 const audioBuffers = new Map();     
 const recordingTimers = new Map();  
@@ -32,8 +31,8 @@ app.get('/dashboard', (req, res) => {
         <div class="max-w-6xl mx-auto space-y-6">
             <header class="flex flex-col md:flex-row md:items-center md:justify-between border-b border-slate-800 pb-4">
                 <div>
-                    <h1 class="text-2xl font-bold text-cyan-400 flex items-center gap-2">🎙️ Hệ Thống Radar Âm Thanh & AI (V3 Tối Ưu)</h1>
-                    <p class="text-xs text-slate-400 mt-1">Kết nối liên tục - Kích hoạt Realtime - Phân tích phổ tần số</p>
+                    <h1 class="text-2xl font-bold text-cyan-400 flex items-center gap-2">🎙️ Hệ Thống Radar Âm Thanh & AI (V4)</h1>
+                    <p class="text-xs text-slate-400 mt-1">Kết nối liên tục - Kích hoạt Realtime - Dữ liệu 5s</p>
                 </div>
                 <div id="connection-status" class="mt-2 px-3 py-1 rounded-full text-xs font-medium bg-red-500/10 text-red-400 border border-red-500/20 w-fit">
                     🔴 Mất kết nối Monitor
@@ -119,7 +118,6 @@ app.get('/dashboard', (req, res) => {
             window.addEventListener('resize', resizeCanvases);
             resizeCanvases();
 
-            // FIX CÚ PHÁP: Dùng chuỗi thường để không bị lỗi trên Render
             function addLog(message, type = 'info') {
                 const now = new Date();
                 const timeStr = now.toTimeString().split(' ')[0];
@@ -253,10 +251,10 @@ wss.on('connection', (ws, req) => {
                     logType: 'success'
                 });
 
-                // TỐI ƯU SIÊU TỐC: Rút ngắn xuống 3 giây (3000ms) để phản hồi siêu nhanh
+                // Đổi về 5 giây (5000ms) để bạn nói được nhiều từ hơn
                 let timer = setTimeout(() => {
                     processCommand(ws);
-                }, 3000);
+                }, 5000);
                 recordingTimers.set(ws, timer);
             }
 
@@ -323,8 +321,7 @@ async function processCommand(ws) {
         const wavBuffer = createWavBuffer(pcmBuffers, 16000);
         const base64Audio = wavBuffer.toString('base64');
 
-        // TỐI ƯU: Đổi cứng sang gemini-3.1-flash-lite theo yêu cầu, 
-        // Vẫn giữ dự phòng biến môi trường nếu sau này bạn muốn đổi mà không cần sửa code.
+        // Mặc định luôn dùng gemini-3.1-flash-lite
         const modelName = process.env.GEMINI_MODEL_VERSION || 'gemini-3.1-flash-lite';
 
         const response = await ai.models.generateContent({
@@ -332,8 +329,7 @@ async function processCommand(ws) {
             contents: [
                 { inlineData: { mimeType: 'audio/wav', data: base64Audio } },
                 {
-                    // TỐI ƯU PROMPT: Ngắn gọn tối đa, ép AI không suy nghĩ dài dòng để giảm độ trễ
-                    text: `Bạn là công tắc xử lý lệnh siêu tốc. Phân tích âm thanh và trả về JSON ngay lập tức:
+                    text: `Bạn là công tắc xử lý lệnh thông minh. Phân tích âm thanh và trả về JSON:
                     - Nếu muốn BẬT đèn/led -> led = 1, text = "Đã bật".
                     - Nếu muốn TẮT đèn/led -> led = 0, text = "Đã tắt".
                     - Khác -> led = -1, text = "Không rõ".
@@ -401,5 +397,3 @@ function broadcastToMonitor(obj) {
         if (client.readyState === 1 && !client.isHardware) client.send(JSON.stringify(obj));
     });
 }
-
-
