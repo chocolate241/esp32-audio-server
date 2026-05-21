@@ -1,12 +1,9 @@
 const express = require('express');
 const { WebSocketServer } = require('ws');
-const path = require('path');
-
 const app = express();
-// Render sử dụng biến môi trường process.env.PORT để cấp cổng tự động
-const PORT = process.env.PORT || 8080; 
+const PORT = process.env.PORT || 8080;
 
-// Đường dẫn trang nghe trực tuyến
+
 app.get('/nghe', (req, res) => {
     res.send(`
     <!DOCTYPE html>
@@ -39,6 +36,7 @@ app.get('/nghe', (req, res) => {
         <button id="startBtn">KẾT NỐI & PHÂN TÍCH</button>
         <div id="status">Hệ thống đang chờ lệnh...</div>
 
+
         <div class="dashboard">
             <div class="card">
                 <div class="card-title">Biên độ Đỉnh</div>
@@ -58,7 +56,9 @@ app.get('/nghe', (req, res) => {
             </div>
         </div>
 
+
         <canvas id="visualizer" width="600" height="160"></canvas>
+
 
         <script>
             let audioCtx;
@@ -66,35 +66,41 @@ app.get('/nghe', (req, res) => {
             let analyser;
             let nextStartTime = 0;
            
+            // Các biến phục vụ thống kê số liệu
             let packetCount = 0;
             let lastPacketTime = Date.now();
             let sampleRateCounter = 0;
             let lastSecTime = Date.now();
+
 
             const startBtn = document.getElementById('startBtn');
             const statusDiv = document.getElementById('status');
             const canvas = document.getElementById('visualizer');
             const canvasCtx = canvas.getContext('2d');
 
+
+            // Các thẻ hiển thị số liệu
             const valPeak = document.getElementById('valPeak');
             const valSample = document.getElementById('valSample');
             const valPackets = document.getElementById('valPackets');
             const valLatency = document.getElementById('valLatency');
 
+
             startBtn.onclick = () => {
-                // Khởi tạo AudioContext đồng bộ tần số 16kHz của INMP441
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
                 analyser = audioCtx.createAnalyser();
                 analyser.fftSize = 512;
+
 
                 startBtn.style.display = 'none';
                 canvas.style.display = 'block';
                 statusDiv.innerText = "Đang bắt tín hiệu từ Cloud...";
 
-                // Tự động nhận diện ws:// hoặc wss:// (Bắt buộc phải có wss trên Render)
+
                 const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
                 ws = new WebSocket(protocol + window.location.host);
                 ws.binaryType = 'arraybuffer';
+
 
                 ws.onopen = () => {
                     statusDiv.innerText = "HỆ THỐNG ONLINE - ĐANG ĐO ĐẠC ĐƯỜNG TRUYỀN 🟢";
@@ -103,20 +109,23 @@ app.get('/nghe', (req, res) => {
                     draw();
                 };
 
+
                 ws.onmessage = (event) => {
                     if (event.data.byteLength === 0) return;
 
+
+                    // 1. Phân tích số liệu gói tin
                     packetCount++;
                     let now = Date.now();
                     let delta = now - lastPacketTime;
                     lastPacketTime = now;
                    
-                    // Nhận mảng Int16 từ ESP32 truyền về
                     let int16Array = new Int16Array(event.data);
                     let samplesCount = int16Array.length;
                     sampleRateCounter += samplesCount;
 
-                    // Tính Biên độ đỉnh (Peak Amplitude)
+
+                    // Tính toán Biên độ đỉnh (Peak Amplitude) để đo độ rõ của giọng nói
                     let maxVal = 0;
                     for (let i = 0; i < samplesCount; i++) {
                         let absVal = Math.abs(int16Array[i]);
@@ -124,17 +133,22 @@ app.get('/nghe', (req, res) => {
                     }
                     let peakPercentage = ((maxVal / 32768) * 100).toFixed(1);
 
+
+                    // Cập nhật số liệu lên màn hình sau mỗi gói
                     valPackets.innerText = packetCount;
                     valPeak.innerText = peakPercentage + "%";
                     valLatency.innerText = delta + "ms";
 
+
+                    // Cập nhật tần số mẫu thực tế (mỗi giây tính toán lại 1 lần)
                     if (now - lastSecTime >= 1000) {
                         valSample.innerText = sampleRateCounter + " Hz";
                         sampleRateCounter = 0;
                         lastSecTime = now;
                     }
 
-                    // Giải mã PCM 16-bit chuyển sang dải Float -1.0 -> 1.0 cho Web Audio API phát ra loa
+
+                    // 2. Xử lý giải mã và đẩy vào mạch phát âm thanh chống giật
                     let audioBuffer = audioCtx.createBuffer(1, samplesCount, 16000);
                     let channelData = audioBuffer.getChannelData(0);
                    
@@ -147,31 +161,28 @@ app.get('/nghe', (req, res) => {
                     source.connect(analyser);
                     analyser.connect(audioCtx.destination);
                    
-                    // Thuật toán gối đệm (Jitter Buffer) giúp chống giật giật tiếng do độ trễ mạng Internet
                     if (nextStartTime < audioCtx.currentTime) {
-                        nextStartTime = audioCtx.currentTime + 0.05; // Tăng nhẹ buffer để âm thanh liên tục
+                        nextStartTime = audioCtx.currentTime + 0.03;
                     }
                    
                     source.start(nextStartTime);
                     nextStartTime += audioBuffer.duration;
                 };
-
-                ws.onclose = () => {
-                    statusDiv.innerText = "MẤT KẾT NỐI CLOUD X 🔴";
-                    statusDiv.style.color = "#ff4d4d";
-                };
             };
 
+
+            // Vẽ đồ thị sóng âm Radar Cyan chuyên nghiệp
             function draw() {
                 requestAnimationFrame(draw);
                 const bufferLength = analyser.frequencyBinCount;
                 const dataArray = new Uint8Array(bufferLength);
                 analyser.getByteTimeDomainData(dataArray);
 
+
                 canvasCtx.fillStyle = '#1f2833';
                 canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
                
-                // Vẽ lưới nền Radar
+                // Vẽ lưới tọa độ âm thanh nền (Grid)
                 canvasCtx.strokeStyle = '#45f3ff11';
                 canvasCtx.lineWidth = 1;
                 for(let i = 0; i < canvas.width; i += 40) {
@@ -181,15 +192,18 @@ app.get('/nghe', (req, res) => {
                     canvasCtx.beginPath(); canvasCtx.moveTo(0, i); canvasCtx.lineTo(canvas.width, i); canvasCtx.stroke();
                 }
 
-                // Vẽ sóng âm Cyan Neon
+
+                // Vẽ đường sóng chính
                 canvasCtx.lineWidth = 2.5;
                 canvasCtx.strokeStyle = '#66fcf1';
                 canvasCtx.shadowBlur = 4;
                 canvasCtx.shadowColor = '#66fcf1';
                 canvasCtx.beginPath();
 
+
                 let sliceWidth = canvas.width / bufferLength;
                 let x = 0;
+
 
                 for (let i = 0; i < bufferLength; i++) {
                     let v = dataArray[i] / 128.0;
@@ -200,7 +214,7 @@ app.get('/nghe', (req, res) => {
                 }
                 canvasCtx.lineTo(canvas.width, canvas.height / 2);
                 canvasCtx.stroke();
-                canvasCtx.shadowBlur = 0;
+                canvasCtx.shadowBlur = 0; // reset shadow
             }
         </script>
     </body>
@@ -208,30 +222,18 @@ app.get('/nghe', (req, res) => {
     `);
 });
 
-// Điều hướng mặc định về trang /nghe
-app.get('/', (req, res) => {
-    res.redirect('/nghe');
-});
 
-const server = app.listen(PORT, () => console.log(`[Server] Giao diện đang chạy tại cổng: ${PORT}`));
-
-// Khởi tạo WebSocket Server tích hợp chung cổng HTTP (Tương thích tốt nhất với Render)
+const server = app.listen(PORT, () => console.log(`Analytics Server đang chạy tại cổng: ${PORT}`));
 const wss = new WebSocketServer({ server });
 
-wss.on('connection', (ws, req) => {
-    const ip = req.socket.remoteAddress;
-    console.log(`[Cloud] Thêm một kết nối mới từ thiết bị: ${ip}`);
 
+wss.on('connection', (ws) => {
     ws.on('message', (message) => {
-        // Broadcast (Truyền dẫn) toàn bộ khối nhị phân từ ESP32 sang Trình duyệt Web
         wss.clients.forEach((client) => {
-            if (client !== ws && client.readyState === 1) { // 1 nghĩa là trạng thái OPEN
+            if (client !== ws && client.readyState === 1) {
                 client.send(message);
             }
         });
     });
-
-    ws.on('close', () => {
-        console.log(`[Cloud] Một thiết bị đã ngắt kết nối.`);
-    });
 });
+
