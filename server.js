@@ -1,31 +1,12 @@
 const express = require('express');
 const { WebSocketServer } = require('ws');
-const { GoogleGenerativeAI } = require("@google/generative-ai");
-const wav = require('wav');
-const fs = require('fs');
 const path = require('path');
-const os = require('os'); // 🔥 THÊM: Để lấy thư mục tạm của hệ thống Cloud
-
-// --- CẤU HÌNH GEMINI ---
-// --- CẤU HÌNH GEMINI ---
-const genAI = new GoogleGenerativeAI("AIzaSyAaHN8Ot1-uX792aKgNxm3RD11HJALgBLs");
-
-// 🔥 SỬA THÀNH DÒNG NÀY: Thêm "models/" phía trước tên model
-const model = genAI.getGenerativeModel({ model: "models/gemini-1.5-flash" });
 
 const app = express();
-const PORT = process.env.PORT || 8080;
+// Render sử dụng biến môi trường process.env.PORT để cấp cổng tự động
+const PORT = process.env.PORT || 8080; 
 
-// Biến lưu trữ trạng thái xử lý AI
-let sttResultText = "Đang chờ mệnh lệnh từ ESP32...";
-let audioChunks = [];
-let lastActiveTime = Date.now();
-let isRecording = false;
-
-app.get('/get-gemini-text', (req, res) => {
-    res.json({ text: sttResultText });
-});
-
+// Đường dẫn trang nghe trực tuyến
 app.get('/nghe', (req, res) => {
     res.send(`
     <!DOCTYPE html>
@@ -40,12 +21,13 @@ app.get('/nghe', (req, res) => {
             p { color: #45f3ff; font-size: 14px; margin-top: 0; margin-bottom: 25px; }
             button { padding: 15px 35px; font-size: 16px; cursor: pointer; background: #66fcf1; color: #0b0c10; border: none; border-radius: 25px; font-weight: bold; box-shadow: 0 4px 15px rgba(102,252,241,0.3); transition: 0.3s; }
             button:hover { background: #45f3ff; transform: translateY(-2px); }
-            
-            #stt-box { max-width: 600px; margin: 20px auto; background: #1f2833; padding: 15px; border-radius: 10px; border: 1px dashed #66fcf1; font-size: 18px; color: #ff9f43; font-weight: bold; }
+           
+            /* Khu vực Dashboard số liệu */
             .dashboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 15px; max-width: 600px; margin: 20px auto; padding: 10px; }
             .card { background: #1f2833; padding: 15px; border-radius: 10px; border: 1px solid #45f3ff33; }
             .card-title { font-size: 12px; color: #85929e; text-transform: uppercase; margin-bottom: 5px; }
             .card-value { font-size: 20px; font-weight: bold; color: #66fcf1; }
+           
             #status { margin: 15px 0; font-size: 16px; font-weight: bold; color: #ff9f43; }
             canvas { background: #1f2833; border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.6); display: none; margin: 0 auto; border: 1px solid #1f2833; }
         </style>
@@ -53,51 +35,69 @@ app.get('/nghe', (req, res) => {
     <body>
         <h2>🎙️ HỆ THỐNG GIÁM SÁT ÂM THANH CLOUD</h2>
         <p>Real-time Audio Digital Signal Processing (DSP) Analytics</p>
-        
+       
         <button id="startBtn">KẾT NỐI & PHÂN TÍCH</button>
         <div id="status">Hệ thống đang chờ lệnh...</div>
 
-        <div id="stt-box">
-            🤖 Gemini: <span id="sttText" style="color: #fff; font-weight: normal; font-style: italic;">Đang đợi bạn nói...</span>
-        </div>
-
         <div class="dashboard">
-            <div class="card"><div class="card-title">Biên độ Đỉnh</div><div id="valPeak" class="card-value">0%</div></div>
-            <div class="card"><div class="card-title">Tần số mẫu</div><div id="valSample" class="card-value">0 Hz</div></div>
-            <div class="card"><div class="card-title">Số Gói Nhận</div><div id="valPackets" class="card-value">0</div></div>
-            <div class="card"><div class="card-title">Độ Trễ 🛡️</div><div id="valLatency" class="card-value">0ms</div></div>
+            <div class="card">
+                <div class="card-title">Biên độ Đỉnh</div>
+                <div id="valPeak" class="card-value">0%</div>
+            </div>
+            <div class="card">
+                <div class="card-title">Tần số mẫu</div>
+                <div id="valSample" class="card-value">0 Hz</div>
+            </div>
+            <div class="card">
+                <div class="card-title">Số Gói Nhận</div>
+                <div id="valPackets" class="card-value">0</div>
+            </div>
+            <div class="card">
+                <div class="card-title">Độ Trễ 🛡️</div>
+                <div id="valLatency" class="card-value">0ms</div>
+            </div>
         </div>
 
         <canvas id="visualizer" width="600" height="160"></canvas>
 
         <script>
-            let audioCtx, ws, analyser, nextStartTime = 0;
-            let packetCount = 0, lastPacketTime = Date.now(), sampleRateCounter = 0, lastSecTime = Date.now();
+            let audioCtx;
+            let ws;
+            let analyser;
+            let nextStartTime = 0;
+           
+            let packetCount = 0;
+            let lastPacketTime = Date.now();
+            let sampleRateCounter = 0;
+            let lastSecTime = Date.now();
 
-            const startBtn = document.getElementById('startBtn'), statusDiv = document.getElementById('status'), canvas = document.getElementById('visualizer'), canvasCtx = canvas.getContext('2d');
-            const valPeak = document.getElementById('valPeak'), valSample = document.getElementById('valSample'), valPackets = document.getElementById('valPackets'), valLatency = document.getElementById('valLatency');
+            const startBtn = document.getElementById('startBtn');
+            const statusDiv = document.getElementById('status');
+            const canvas = document.getElementById('visualizer');
+            const canvasCtx = canvas.getContext('2d');
 
-            // 🔥 SỬA: Tăng từ 500ms lên 2000ms để tránh dồn ứ Request gây sập 502 khi Render khởi động lại
-            setInterval(async () => {
-                try {
-                    let res = await fetch('/get-gemini-text');
-                    let data = await res.json();
-                    document.getElementById('sttText').innerText = data.text;
-                } catch(e) {}
-            }, 2000);
+            const valPeak = document.getElementById('valPeak');
+            const valSample = document.getElementById('valSample');
+            const valPackets = document.getElementById('valPackets');
+            const valLatency = document.getElementById('valLatency');
 
             startBtn.onclick = () => {
+                // Khởi tạo AudioContext đồng bộ tần số 16kHz của INMP441
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-                analyser = audioCtx.createAnalyser(); analyser.fftSize = 512;
-                startBtn.style.display = 'none'; canvas.style.display = 'block';
+                analyser = audioCtx.createAnalyser();
+                analyser.fftSize = 512;
+
+                startBtn.style.display = 'none';
+                canvas.style.display = 'block';
                 statusDiv.innerText = "Đang bắt tín hiệu từ Cloud...";
 
+                // Tự động nhận diện ws:// hoặc wss:// (Bắt buộc phải có wss trên Render)
                 const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
                 ws = new WebSocket(protocol + window.location.host);
                 ws.binaryType = 'arraybuffer';
 
-                ws.onopen = () => { 
-                    statusDiv.innerText = "HỆ THỐNG ONLINE 🟢"; 
+                ws.onopen = () => {
+                    statusDiv.innerText = "HỆ THỐNG ONLINE - ĐANG ĐO ĐẠC ĐƯỜNG TRUYỀN 🟢";
                     statusDiv.style.color = "#66fcf1";
                     nextStartTime = audioCtx.currentTime;
                     draw();
@@ -105,22 +105,28 @@ app.get('/nghe', (req, res) => {
 
                 ws.onmessage = (event) => {
                     if (event.data.byteLength === 0) return;
+
                     packetCount++;
                     let now = Date.now();
-                    valLatency.innerText = (now - lastPacketTime) + "ms";
+                    let delta = now - lastPacketTime;
                     lastPacketTime = now;
-                    
-                    let int32Data = new Int32Array(event.data); 
-                    let samplesCount = int32Data.length;
+                   
+                    // Nhận mảng Int16 từ ESP32 truyền về
+                    let int16Array = new Int16Array(event.data);
+                    let samplesCount = int16Array.length;
                     sampleRateCounter += samplesCount;
 
+                    // Tính Biên độ đỉnh (Peak Amplitude)
                     let maxVal = 0;
                     for (let i = 0; i < samplesCount; i++) {
-                        let absVal = Math.abs(int32Data[i]);
+                        let absVal = Math.abs(int16Array[i]);
                         if (absVal > maxVal) maxVal = absVal;
                     }
-                    valPeak.innerText = ((maxVal / 2147483648.0) * 100).toFixed(1) + "%";
+                    let peakPercentage = ((maxVal / 32768) * 100).toFixed(1);
+
                     valPackets.innerText = packetCount;
+                    valPeak.innerText = peakPercentage + "%";
+                    valLatency.innerText = delta + "ms";
 
                     if (now - lastSecTime >= 1000) {
                         valSample.innerText = sampleRateCounter + " Hz";
@@ -128,17 +134,31 @@ app.get('/nghe', (req, res) => {
                         lastSecTime = now;
                     }
 
+                    // Giải mã PCM 16-bit chuyển sang dải Float -1.0 -> 1.0 cho Web Audio API phát ra loa
                     let audioBuffer = audioCtx.createBuffer(1, samplesCount, 16000);
                     let channelData = audioBuffer.getChannelData(0);
+                   
                     for (let i = 0; i < samplesCount; i++) {
-                        channelData[i] = int32Data[i] / 2147483648.0;
+                        channelData[i] = int16Array[i] / 32768.0;
                     }
+                   
                     let source = audioCtx.createBufferSource();
                     source.buffer = audioBuffer;
-                    source.connect(analyser); analyser.connect(audioCtx.destination);
-                    if (nextStartTime < audioCtx.currentTime) nextStartTime = audioCtx.currentTime + 0.03; 
+                    source.connect(analyser);
+                    analyser.connect(audioCtx.destination);
+                   
+                    // Thuật toán gối đệm (Jitter Buffer) giúp chống giật giật tiếng do độ trễ mạng Internet
+                    if (nextStartTime < audioCtx.currentTime) {
+                        nextStartTime = audioCtx.currentTime + 0.05; // Tăng nhẹ buffer để âm thanh liên tục
+                    }
+                   
                     source.start(nextStartTime);
                     nextStartTime += audioBuffer.duration;
+                };
+
+                ws.onclose = () => {
+                    statusDiv.innerText = "MẤT KẾT NỐI CLOUD X 🔴";
+                    statusDiv.style.color = "#ff4d4d";
                 };
             };
 
@@ -147,17 +167,40 @@ app.get('/nghe', (req, res) => {
                 const bufferLength = analyser.frequencyBinCount;
                 const dataArray = new Uint8Array(bufferLength);
                 analyser.getByteTimeDomainData(dataArray);
-                canvasCtx.fillStyle = '#1f2833'; canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
-                canvasCtx.strokeStyle = '#45f3ff11'; canvasCtx.lineWidth = 1;
-                for(let i = 0; i < canvas.width; i += 40) { canvasCtx.beginPath(); canvasCtx.moveTo(i, 0); canvasCtx.lineTo(i, canvas.height); canvasCtx.stroke(); }
-                canvasCtx.lineWidth = 2.5; canvasCtx.strokeStyle = '#66fcf1'; canvasCtx.beginPath();
-                let sliceWidth = canvas.width / bufferLength, x = 0;
+
+                canvasCtx.fillStyle = '#1f2833';
+                canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+               
+                // Vẽ lưới nền Radar
+                canvasCtx.strokeStyle = '#45f3ff11';
+                canvasCtx.lineWidth = 1;
+                for(let i = 0; i < canvas.width; i += 40) {
+                    canvasCtx.beginPath(); canvasCtx.moveTo(i, 0); canvasCtx.lineTo(i, canvas.height); canvasCtx.stroke();
+                }
+                for(let i = 0; i < canvas.height; i += 30) {
+                    canvasCtx.beginPath(); canvasCtx.moveTo(0, i); canvasCtx.lineTo(canvas.width, i); canvasCtx.stroke();
+                }
+
+                // Vẽ sóng âm Cyan Neon
+                canvasCtx.lineWidth = 2.5;
+                canvasCtx.strokeStyle = '#66fcf1';
+                canvasCtx.shadowBlur = 4;
+                canvasCtx.shadowColor = '#66fcf1';
+                canvasCtx.beginPath();
+
+                let sliceWidth = canvas.width / bufferLength;
+                let x = 0;
+
                 for (let i = 0; i < bufferLength; i++) {
-                    let v = dataArray[i] / 128.0, y = v * canvas.height / 2;
-                    if (i === 0) canvasCtx.moveTo(x, y); else canvasCtx.lineTo(x, y);
+                    let v = dataArray[i] / 128.0;
+                    let y = v * canvas.height / 2;
+                    if (i === 0) canvasCtx.moveTo(x, y);
+                    else canvasCtx.lineTo(x, y);
                     x += sliceWidth;
                 }
-                canvasCtx.lineTo(canvas.width, canvas.height / 2); canvasCtx.stroke();
+                canvasCtx.lineTo(canvas.width, canvas.height / 2);
+                canvasCtx.stroke();
+                canvasCtx.shadowBlur = 0;
             }
         </script>
     </body>
@@ -165,81 +208,30 @@ app.get('/nghe', (req, res) => {
     `);
 });
 
-const server = app.listen(PORT, () => console.log(`Server chạy tại cổng: ${PORT}`));
-const wss = new WebSocketServer({ server });
-
-wss.on('connection', (ws) => {
-    ws.on('message', async (message) => {
-        // Gửi sang trang Web để vẽ Visualizer
-        wss.clients.forEach((client) => {
-            if (client !== ws && client.readyState === 1) client.send(message);
-        });
-
-        // Xử lý Audio cho Gemini
-        if (Buffer.isBuffer(message)) {
-            lastActiveTime = Date.now();
-            if (!isRecording) {
-                isRecording = true;
-                audioChunks = [];
-                sttResultText = "⚡ Đang thu âm câu lệnh...";
-            }
-
-            // Chuyển 32-bit sang 16-bit PCM
-            let int32Array = new Int32Array(message.buffer);
-            let int16Buffer = Buffer.alloc(int32Array.length * 2);
-            for (let i = 0; i < int32Array.length; i++) {
-                let sample16 = int32Array[i] >> 16; 
-                int16Buffer.writeInt16LE(sample16, i * 2);
-            }
-            audioChunks.push(int16Buffer);
-        }
-    });
+// Điều hướng mặc định về trang /nghe
+app.get('/', (req, res) => {
+    res.redirect('/nghe');
 });
 
-// Kiểm tra im lặng để đóng gói và gửi Gemini
-setInterval(async () => {
-    if (isRecording && (Date.now() - lastActiveTime > 1200)) {
-        isRecording = false;
-        sttResultText = "⏳ Đang phân tích âm thanh...";
-        
-        let finalBuffer = Buffer.concat(audioChunks);
-        
-        // 🔥 SỬA CHÍ MẠNG: Đổi từ __dirname sang os.tmpdir() để tránh lỗi ghi file trên Render
-        let filename = path.join(os.tmpdir(), 'command.wav');
+const server = app.listen(PORT, () => console.log(`[Server] Giao diện đang chạy tại cổng: ${PORT}`));
 
-        let wavWriter = new wav.FileWriter(filename, {
-            channels: 1,
-            sampleRate: 16000,
-            bitDepth: 16
-        });
+// Khởi tạo WebSocket Server tích hợp chung cổng HTTP (Tương thích tốt nhất với Render)
+const wss = new WebSocketServer({ server });
 
-        wavWriter.write(finalBuffer);
-        wavWriter.end();
+wss.on('connection', (ws, req) => {
+    const ip = req.socket.remoteAddress;
+    console.log(`[Cloud] Thêm một kết nối mới từ thiết bị: ${ip}`);
 
-        wavWriter.on('done', async () => {
-            try {
-                const fileBuffer = fs.readFileSync(filename);
-                const base64Audio = fileBuffer.toString('base64');
-
-                const result = await model.generateContent([
-                    "Đây là âm thanh từ micro. Nếu nghe thấy lệnh muốn bật đèn hoặc thiết bị, trả về đúng 'LED_ON'. Nếu muốn tắt, trả về đúng 'LED_OFF'. Nếu là câu nói khác, hãy tóm tắt lại ngắn gọn.",
-                    { inlineData: { data: base64Audio, mimeType: "audio/wav" } },
-                ]);
-
-                const responseText = result.response.text().trim();
-                console.log("Gemini phản hồi:", responseText);
-                sttResultText = responseText;
-
-                if (responseText.includes("LED_ON")) {
-                    sttResultText = "✨ Lệnh: BẬT ĐÈN";
-                    wss.clients.forEach(c => { if (c.readyState === 1) c.send("ON"); });
-                } else if (responseText.includes("LED_OFF")) {
-                    sttResultText = "✨ Lệnh: TẮT ĐÈN"; // Sửa lỗi chính tả "TẬT ĐÈN" của code cũ luôn nhé!
-                    wss.clients.forEach(c => { if (c.readyState === 1) c.send("OFF"); });
-                }
-            } catch (err) {
-                sttResultText = "❌ Lỗi Gemini: " + err.message;
+    ws.on('message', (message) => {
+        // Broadcast (Truyền dẫn) toàn bộ khối nhị phân từ ESP32 sang Trình duyệt Web
+        wss.clients.forEach((client) => {
+            if (client !== ws && client.readyState === 1) { // 1 nghĩa là trạng thái OPEN
+                client.send(message);
             }
         });
-    }
-}, 300);
+    });
+
+    ws.on('close', () => {
+        console.log(`[Cloud] Một thiết bị đã ngắt kết nối.`);
+    });
+});
