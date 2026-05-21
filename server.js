@@ -10,11 +10,11 @@ const PORT = process.env.PORT || 8080;
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 // Quản lý trạng thái và bộ đệm của từng kết nối
-const deviceStates = new Map();     // 'WAIT_WAKE' hoặc 'RECORDING'
-const audioBuffers = new Map();     // Nơi lưu trữ các Buffer nhị phân từ ESP32
-const recordingTimers = new Map();  // Quản lý thời gian đếm ngược 5 giây câu lệnh
-const isScanningMap = new Map();    // Khóa bận xử lý API
-const lastScanTimeMap = new Map();  // Khống chế khoảng cách thời gian (Chống tụ luồng)
+const deviceStates = new Map();     
+const audioBuffers = new Map();     
+const recordingTimers = new Map();  
+const isScanningMap = new Map();    
+const lastScanTimeMap = new Map();  
 
 // --- TRANG DASHBOARD THEO DÕI TIẾN ĐỘ CHUYÊN NGHIỆP ---
 app.get('/dashboard', (req, res) => {
@@ -113,7 +113,6 @@ app.get('/dashboard', (req, res) => {
                 logBox.scrollTop = logBox.scrollHeight;
             }
 
-            // Tự động thiết lập kết nối WebSocket với server hiện tại
             const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
             const ws = new WebSocket(protocol + window.location.host);
             ws.binaryType = 'arraybuffer';
@@ -131,7 +130,6 @@ app.get('/dashboard', (req, res) => {
             };
 
             ws.onmessage = (event) => {
-                // Nhận thông điệp trạng thái dạng TEXT từ Server gửi xuống
                 if (typeof event.data === 'string') {
                     try {
                         const data = JSON.parse(event.data);
@@ -139,26 +137,21 @@ app.get('/dashboard', (req, res) => {
                             stateDiv.innerText = data.state;
                             bufferDiv.innerText = data.bufferLength;
                             
-                            if (data.state === '🔴 ĐANG NGHE LỆNH CHÍNH') {
+                            if (data.state.includes('NGHE LỆNH')) {
                                 stateDiv.className = "text-xl font-bold text-red-500 animate-pulse";
-                            } else if (data.state === '🔍 ĐANG QUYÉT WAKE WORD') {
+                            } else if (data.state.includes('QUÝET WAKE WORD')) {
                                 stateDiv.className = "text-xl font-bold text-emerald-400";
                             } else {
                                 stateDiv.className = "text-xl font-bold text-amber-400";
                             }
 
-                            if (data.log) {
-                                addLog(data.log, data.logType || 'info');
-                            }
-                            if (data.aiResponse) {
-                                aiDiv.innerText = data.aiResponse;
-                            }
+                            if (data.log) addLog(data.log, data.logType || 'info');
+                            if (data.aiResponse) aiDiv.innerText = data.aiResponse;
                         }
                     } catch(e) {}
                     return;
                 }
 
-                // Nếu là tín hiệu BINARY từ ESP32 đổ về
                 if (event.data.byteLength > 0) {
                     let now = Date.now();
                     let delta = now - lastPacketTime;
@@ -172,45 +165,52 @@ app.get('/dashboard', (req, res) => {
     `);
 });
 
-// Trang gốc điều hướng trực tiếp sang dashboard
 app.get('/', (req, res) => res.redirect('/dashboard'));
 
 const server = app.listen(PORT, () => console.log(`Analytics Server đang chạy tại cổng: ${PORT}`));
 const wss = new WebSocketServer({ server });
 
-wss.on('connection', (ws) => {
-    console.log('🟢 [WS] Thiết bị đã kết nối thành công!');
+// ==================== QUẢN LÝ KẾT NỐI WEBSOCKET (ĐÃ FIX LỖI SPAM) ====================
+wss.on('connection', (ws, req) => {
+    console.log('🟢 [WS] Có thiết bị vừa kết nối!');
     
+    // Khởi tạo flag phân loại client
+    ws.isHardware = false; 
+
     deviceStates.set(ws, 'WAIT_WAKE');
     audioBuffers.set(ws, []);
     isScanningMap.set(ws, false);
     lastScanTimeMap.set(ws, 0);
 
-    // Đồng bộ trạng thái ban đầu cho trang web theo dõi
-    broadcastToMonitor({
-        type: 'MONITOR_UPDATE',
-        state: '🔍 ĐANG QUÝET WAKE WORD',
-        bufferLength: 0,
-        log: 'Thiết bị ESP32 vừa thiết lập liên kết mới.',
-        logType: 'success'
-    });
-
     ws.on('message', async (message, isBinary) => {
         if (isBinary) {
+            // NẾU NHẬN ĐƯỢC DỮ LIỆU NHỊ PHÂN -> ĐÂY CHẮC CHẮN LÀ MẠCH ESP32!
+            if (!ws.isHardware) {
+                ws.isHardware = true; 
+                console.log('✈️ [Hệ thống] Xác nhận Client này là mạch ESP32.');
+                broadcastToMonitor({
+                    type: 'MONITOR_UPDATE',
+                    state: '🔍 ĐANG QUÝET WAKE WORD',
+                    bufferLength: 0,
+                    log: 'Thiết bị ESP32 phần cứng đã liên kết thành công!',
+                    logType: 'success'
+                });
+            }
+
             let state = deviceStates.get(ws) || 'WAIT_WAKE';
             let bufferList = audioBuffers.get(ws) || [];
             
             bufferList.push(Buffer.from(message));
             audioBuffers.set(ws, bufferList);
 
-            // Forward luồng dữ liệu nhị phân lên browser để đo latency sóng âm
+            // Forward luồng nhị phân ĐÃ LỌC: Chỉ gửi về cho Trình duyệt Web để tính latency
             wss.clients.forEach((client) => {
-                if (client !== ws && client.readyState === 1) {
+                if (client !== ws && client.readyState === 1 && !client.isHardware) {
                     client.send(message);
                 }
             });
 
-            // CẬP NHẬT GIAO DIỆN THEO DÕI LIÊN TỤC
+            // Cập nhật số gói buffer định kỳ lên giao diện Monitor Web
             if (bufferList.length % 5 === 0) {
                 broadcastToMonitor({
                     type: 'MONITOR_UPDATE',
@@ -243,7 +243,7 @@ wss.on('connection', (ws) => {
     });
 
     ws.on('close', () => {
-        console.log('🔴 [WS] Thiết bị đã ngắt kết nối.');
+        console.log(`🔴 [WS] Một kết nối đã ngắt (${ws.isHardware ? "ESP32" : "Web Monitor"}).`);
         audioBuffers.delete(ws);
         deviceStates.delete(ws);
         isScanningMap.delete(ws);
@@ -251,13 +251,15 @@ wss.on('connection', (ws) => {
         if (recordingTimers.has(ws)) clearTimeout(recordingTimers.get(ws));
         recordingTimers.delete(ws);
 
-        broadcastToMonitor({
-            type: 'MONITOR_UPDATE',
-            state: '🔴 MẤT KẾT NỐI PHẦN CỨNG',
-            bufferLength: 0,
-            log: 'Cảnh báo: Mạch ESP32 đã ngắt kết nối với Cloud.',
-            logType: 'error'
-        });
+        if (ws.isHardware) {
+            broadcastToMonitor({
+                type: 'MONITOR_UPDATE',
+                state: '🔴 MẤT KẾT NỐI PHẦN CỨNG',
+                bufferLength: 0,
+                log: 'Cảnh báo: Mạch ESP32 đã ngắt kết nối với Cloud.',
+                logType: 'error'
+            });
+        }
     });
 });
 
@@ -419,11 +421,10 @@ function createWavBuffer(pcmBuffers, sampleRate = 16000) {
     return wavBuffer;
 }
 
-// Gửi đồng bộ thông tin trạng thái thuần Text tới các trang Web Monitor đang mở
+// Gửi đồng bộ thông tin trạng thái: CHỈ GỬI TRÌNH DUYỆT WEB, BỎ QUA ESP32
 function broadcastToMonitor(obj) {
     wss.clients.forEach((client) => {
-        // Chỉ gửi đến các kết nối ở dạng Text (Trang Web), bỏ qua kết nối Binary (ESP32)
-        if (client.readyState === 1) {
+        if (client.readyState === 1 && !client.isHardware) {
             client.send(JSON.stringify(obj));
         }
     });
