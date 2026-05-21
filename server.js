@@ -78,7 +78,7 @@ app.get('/dashboard', (req, res) => {
             <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-lg">
                 <div class="flex items-center gap-2 mb-3">
                     <span class="text-xl">🤖</span>
-                    <h2 class="text-lg font-bold text-slate-100">Kết quả xử lý từ Gemini AI</h2>
+                    <h2 class="text-lg font-bold text-slate-100">Kết quả xử lý từ  AI</h2>
                 </div>
                 <div id="ai-response" class="bg-slate-950 border border-slate-800 p-4 rounded-lg text-slate-300 font-mono text-sm min-h-[60px] whitespace-pre-wrap">
                     Đang ở chế độ ngủ đông... Hãy nói trực tiếp vào micro của ESP32 để kích hoạt luồng điều khiển.
@@ -133,7 +133,7 @@ app.get('/dashboard', (req, res) => {
 
             let lastPacketTime = Date.now();
 
-            function addLog(message, type = 'info') {
+function addLog(message, type = 'info') {
                 const now = new Date();
                 const timeStr = now.toTimeString().split(' ')[0] + '.' + String(now.getMilliseconds()).padStart(3, '0');
                 let color = 'text-slate-400';
@@ -141,7 +141,8 @@ app.get('/dashboard', (req, res) => {
                 if (type === 'warn') color = 'text-amber-400';
                 if (type === 'error') color = 'text-red-400 font-bold';
                 
-                logBox.innerHTML += `<div class="\${color}">[\${timeStr}] \${message}</div>`;
+                // ĐÃ SỬA: Bỏ các dấu gạch chéo ngược (\) ở trước các dấu đô-la ($)
+                logBox.innerHTML += `<div class="${color}">[${timeStr}] ${message}</div>`;
                 logBox.scrollTop = logBox.scrollHeight;
             }
 
@@ -303,11 +304,11 @@ wss.on('connection', (ws, req) => {
     });
 });
 
-// ==================== BIÊN DỊCH BẰNG GEMINI AI ====================
+// ==================== BIÊN DỊCH BẰNG  AI ====================
 async function processCommand(ws) {
     broadcastToMonitor({ 
         type: 'MONITOR_UPDATE', 
-        state: '⚙️ GEMINI ĐANG BIÊN DỊCH CÂU LỆNH', 
+        state: '⚙️  ĐANG BIÊN DỊCH CÂU LỆNH', 
         bufferLength: 0, 
         log: '⏱️ Kết thúc 5 giây thu âm! Đang đóng gói file âm thanh...', 
         logType: 'warn' 
@@ -330,14 +331,14 @@ async function processCommand(ws) {
         // Báo cho giao diện Web biết là đã có file âm thanh sẵn sàng để tải về
         broadcastToMonitor({
             type: 'MONITOR_UPDATE',
-            state: '⚙️ GEMINI ĐANG BIÊN DỊCH CÂU LỆNH',
+            state: '⚙️  ĐANG BIÊN DỊCH CÂU LỆNH',
             bufferLength: 0,
             hasAudio: true,
             log: '💾 Đã lưu file cache cục bộ! Bạn có thể ấn nút \"Tải file âm thanh\" ở góc trên biểu đồ để nghe thử.'
         });
 
         const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash', 
+            model: 'gemini-3.1-flash-lite', 
             contents: [
                 { inlineData: { mimeType: 'audio/wav', data: base64Audio } },
                 {
