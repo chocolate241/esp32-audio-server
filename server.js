@@ -11,7 +11,10 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const audioBuffers = new Map();     
 const recordingTimers = new Map();  
 
-// --- DASHBOARD MONITOR ---
+// Biến lưu trữ file WAV mới nhất để người dùng tải về test mic
+let lastWavBuffer = null;
+
+// --- DASHBOARD MONITOR NÂNG CẤP HIỆN SÓNG ÂM & NGHE THỬ ---
 app.get('/dashboard', (req, res) => {
     res.send(`
     <!DOCTYPE html>
@@ -31,15 +34,31 @@ app.get('/dashboard', (req, res) => {
         <div class="max-w-5xl mx-auto space-y-6">
             <header class="flex flex-col md:flex-row md:items-center md:justify-between border-b border-slate-800 pb-4">
                 <div>
-                    <h1 class="text-2xl font-bold text-cyan-400">🎙️ Hệ Thống Giám Sát Ngưỡng Âm Thanh</h1>
-                    <p class="text-sm text-slate-400">Chế độ tối ưu hóa tốc độ cao phản hồi Single-Shot kết hợp Gemini AI</p>
+                    <h1 class="text-2xl font-bold text-cyan-400">🎙️ Hệ Thống Giám Sát & Kiểm Tra Micro</h1>
+                    <p class="text-sm text-slate-400">Hỗ trợ hiển thị sóng âm Oscilloscope Realtime & Tải file nghe thử giọng</p>
                 </div>
                 <div class="mt-2 md:mt-0">
                     <span id="connection-status" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-red-500/10 text-red-400 border border-red-500/20">
-                        <span class="h-2 w-2 rounded-full bg-red-500 animate-pulse"></span> Mất kết nối Monitor
+                        <span class="h-2 w-2 rounded-full bg-red-500"></span> Mất kết nối Monitor
                     </span>
                 </div>
             </header>
+
+            <!-- KHU VỰC ĐỒ THỊ SÓNG ÂM REALTIME -->
+            <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl shadow-lg">
+                <div class="flex items-center justify-between mb-2">
+                    <div class="flex items-center gap-2">
+                        <span class="text-xl">📊</span>
+                        <h2 class="text-md font-semibold text-slate-300">Biểu đồ sóng âm Realtime từ ESP32 (Oscilloscope)</h2>
+                    </div>
+                    <button id="download-btn" onclick="downloadAudio()" class="hidden bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-1.5 px-3 rounded transition shadow">
+                        📥 Tải file âm thanh vừa nói (.wav)
+                    </button>
+                </div>
+                <div class="relative w-full h-32 bg-slate-950 rounded-lg border border-slate-800 overflow-hidden">
+                    <canvas id="waveform" class="w-full h-full"></canvas>
+                </div>
+            </div>
 
             <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div class="bg-slate-900 border border-slate-800 p-5 rounded-xl shadow-lg">
@@ -66,7 +85,7 @@ app.get('/dashboard', (req, res) => {
                 </div>
             </div>
 
-            <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-lg flex flex-col h-[350px]">
+            <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-lg flex flex-col h-[250px]">
                 <div class="flex items-center justify-between mb-3">
                     <div class="flex items-center gap-2">
                         <span class="text-xl">📋</span>
@@ -87,6 +106,30 @@ app.get('/dashboard', (req, res) => {
             const latencyDiv = document.getElementById('latency');
             const aiDiv = document.getElementById('ai-response');
             const connStatus = document.getElementById('connection-status');
+            const downloadBtn = document.getElementById('download-btn');
+
+            // Cấu hình Canvas vẽ sóng âm
+            const canvas = document.getElementById('waveform');
+            const ctx = canvas.getContext('2d');
+            
+            function resizeCanvas() {
+                canvas.width = canvas.parentElement.clientWidth;
+                canvas.height = canvas.parentElement.clientHeight;
+            }
+            window.addEventListener('resize', resizeCanvas);
+            resizeCanvas();
+
+            // Vẽ đường thẳng ban đầu (Trạng thái tĩnh)
+            function drawSilentLine() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.strokeStyle = '#334155';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(0, canvas.height / 2);
+                ctx.lineTo(canvas.width, canvas.height / 2);
+                ctx.stroke();
+            }
+            drawSilentLine();
 
             let lastPacketTime = Date.now();
 
@@ -119,6 +162,7 @@ app.get('/dashboard', (req, res) => {
             };
 
             ws.onmessage = (event) => {
+                // Xử lý dữ liệu Text điều khiển UI từ Server
                 if (typeof event.data === 'string') {
                     try {
                         const data = JSON.parse(event.data);
@@ -130,28 +174,75 @@ app.get('/dashboard', (req, res) => {
                                 stateDiv.className = "text-xl font-bold text-red-500 animate-pulse";
                             } else if (data.state.includes('CHỜ KÍCH HOẠT')) {
                                 stateDiv.className = "text-xl font-bold text-emerald-400";
+                                drawSilentLine();
                             } else {
                                 stateDiv.className = "text-xl font-bold text-amber-400";
                             }
 
                             if (data.log) addLog(data.log, data.logType || 'info');
                             if (data.aiResponse) aiDiv.innerText = data.aiResponse;
+                            if (data.hasAudio) downloadBtn.classList.remove('hidden');
                         }
                     } catch(e) {}
                     return;
                 }
 
+                // Xử lý dữ liệu nhị phân (Binary) -> Vẽ sóng âm trực tiếp
                 if (event.data.byteLength > 0) {
                     let now = Date.now();
-                    let delta = now - lastPacketTime;
+                    latencyDiv.innerText = (now - lastPacketTime) + " ms";
                     lastPacketTime = now;
-                    latencyDiv.innerText = delta + " ms";
+
+                    // Chuyển mảng ArrayBuffer thô 16-bit PCM thành Int16Array để đọc dữ liệu biên độ sóng
+                    const audioData = new Int16Array(event.data);
+                    drawWaveform(audioData);
                 }
             };
+
+            // Hàm xử lý đồ họa vẽ sóng âm lên Canvas
+            function drawWaveform(data) {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.strokeStyle = '#22d3ee'; // Màu Cyan nổi bật
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+
+                const sliceWidth = canvas.width / data.length;
+                let x = 0;
+
+                for (let i = 0; i < data.length; i++) {
+                    // Chuẩn hóa biên độ sóng int16 (-32768 đến 32767) vừa khớp chiều cao canvas
+                    const v = data[i] / 32768.0; 
+                    const y = (v * canvas.height / 2) + (canvas.height / 2);
+
+                    if (i === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+
+                    x += sliceWidth;
+                }
+                ctx.lineTo(canvas.width, canvas.height / 2);
+                ctx.stroke();
+            }
+
+            function downloadAudio() {
+                window.location.href = '/download-latest-audio';
+            }
         </script>
     </body>
     </html>
     `);
+});
+
+// Endpoint cho phép tải file âm thanh WAV gần nhất về PC để kiểm tra tiếng micro
+app.get('/download-latest-audio', (req, res) => {
+    if (!lastWavBuffer) {
+        return res.status(404).send("Chưa có file ghi âm nào được lưu lại. Hãy nói vào mic trước.");
+    }
+    res.set({
+        'Content-Type': 'audio/wav',
+        'Content-Disposition': 'attachment; filename="esp32_test_mic.wav"',
+        'Content-Length': lastWavBuffer.length
+    });
+    res.send(lastWavBuffer);
 });
 
 app.get('/', (req, res) => res.redirect('/dashboard'));
@@ -161,7 +252,6 @@ const wss = new WebSocketServer({ server });
 
 // ==================== QUẢN LÝ KẾT NỐI WEBSOCKET ====================
 wss.on('connection', (ws, req) => {
-    console.log('🟢 [WS] Thiết bị vừa kết nối luồng!');
     ws.isHardware = false; 
     audioBuffers.set(ws, []);
 
@@ -170,13 +260,12 @@ wss.on('connection', (ws, req) => {
             if (!ws.isHardware) {
                 ws.isHardware = true; 
                 audioBuffers.set(ws, []); 
-                console.log('✈️ [Hệ thống] ESP32 vượt ngưỡng! Bắt đầu thu âm 5 giây...');
                 
                 broadcastToMonitor({
                     type: 'MONITOR_UPDATE',
                     state: '🔴 ĐANG NGHE LỆNH CHÍNH',
                     bufferLength: 0,
-                    log: '🔊 ESP32 phát hiện âm thanh lớn! Bắt đầu thu âm câu lệnh điều khiển (Giới hạn 5 giây)...',
+                    log: '🔊 ESP32 phát hiện âm thanh lớn! Bắt đầu truyền luồng sóng âm liên tục...',
                     logType: 'success'
                 });
 
@@ -190,14 +279,14 @@ wss.on('connection', (ws, req) => {
             bufferList.push(Buffer.from(message));
             audioBuffers.set(ws, bufferList);
 
-            // Forward dữ liệu lên Monitor Web
+            // Gửi trực tiếp dữ liệu âm thanh thô (Binary) sang Web Monitor để vẽ đồ thị sóng realtime
             wss.clients.forEach((client) => {
                 if (client !== ws && client.readyState === 1 && !client.isHardware) {
-                    client.send(message);
+                    client.send(message); 
                 }
             });
 
-            if (bufferList.length % 2 === 0) { // Giảm log monitor vì kích thước chunk lớn hơn
+            if (bufferList.length % 2 === 0) {
                 broadcastToMonitor({
                     type: 'MONITOR_UPDATE',
                     state: '🔴 ĐANG NGHE LỆNH CHÍNH',
@@ -208,20 +297,9 @@ wss.on('connection', (ws, req) => {
     });
 
     ws.on('close', () => {
-        console.log(`🔴 [WS] Luồng kết nối đã đóng (${ws.isHardware ? "ESP32" : "Monitor"}).`);
         audioBuffers.delete(ws);
         if (recordingTimers.has(ws)) clearTimeout(recordingTimers.get(ws));
         recordingTimers.delete(ws);
-
-        if (ws.isHardware) {
-            broadcastToMonitor({
-                type: 'MONITOR_UPDATE',
-                state: '🔍 CHỜ KÍCH HOẠT ÂM THANH...',
-                bufferLength: 0,
-                log: '🔒 ESP32 đóng kết nối, quay về chế độ quét âm lượng cục bộ.',
-                logType: 'info'
-            });
-        }
     });
 });
 
@@ -231,7 +309,7 @@ async function processCommand(ws) {
         type: 'MONITOR_UPDATE', 
         state: '⚙️ GEMINI ĐANG BIÊN DỊCH CÂU LỆNH', 
         bufferLength: 0, 
-        log: '⏱️ Hết 5 giây thu âm! Khóa bộ đệm và tải âm thanh câu lệnh lên Cloud...', 
+        log: '⏱️ Kết thúc 5 giây thu âm! Đang đóng gói file âm thanh...', 
         logType: 'warn' 
     });
 
@@ -240,16 +318,26 @@ async function processCommand(ws) {
 
     if (pcmBuffers.length === 0) {
         if (ws.readyState === 1) ws.send("GO_SLEEP");
-        broadcastToMonitor({ type: 'MONITOR_UPDATE', state: '🔍 CHỜ KÍCH HOẠT ÂM THANH...', bufferLength: 0, log: 'Hủy xử lý do không thu được dữ liệu âm thanh.', logType: 'warn' });
         return;
     }
 
     try {
         const wavBuffer = createWavBuffer(pcmBuffers, 16000);
+        lastWavBuffer = wavBuffer; // Lưu trữ vào biến Global để người dùng có thể tải về nghe thử
+
         const base64Audio = wavBuffer.toString('base64');
 
+        // Báo cho giao diện Web biết là đã có file âm thanh sẵn sàng để tải về
+        broadcastToMonitor({
+            type: 'MONITOR_UPDATE',
+            state: '⚙️ GEMINI ĐANG BIÊN DỊCH CÂU LỆNH',
+            bufferLength: 0,
+            hasAudio: true,
+            log: '💾 Đã lưu file cache cục bộ! Bạn có thể ấn nút \"Tải file âm thanh\" ở góc trên biểu đồ để nghe thử.'
+        });
+
         const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash', // Cập nhật lên model ổn định mặc định
+            model: 'gemini-2.5-flash', 
             contents: [
                 { inlineData: { mimeType: 'audio/wav', data: base64Audio } },
                 {
@@ -275,8 +363,6 @@ async function processCommand(ws) {
         });
 
         let cleanText = response.text ? response.text.trim() : null;
-        if (!cleanText) throw new Error("Mô hình không trả về dữ liệu.");
-
         const resultJson = JSON.parse(cleanText);
 
         if (ws.readyState === 1) {
@@ -293,9 +379,8 @@ async function processCommand(ws) {
         }
 
     } catch (error) {
-        console.error(error);
         if (ws.readyState === 1) ws.send("GO_SLEEP");
-        broadcastToMonitor({ type: 'MONITOR_UPDATE', state: '🔍 CHỜ KÍCH HOẠT ÂM THANH...', bufferLength: 0, log: `Lỗi biên dịch câu lệnh chính từ API: ${error.message}`, logType: 'error' });
+        broadcastToMonitor({ type: 'MONITOR_UPDATE', state: '🔍 CHỜ KÍCH HOẠT ÂM THANH...', bufferLength: 0, log: `Lỗi: ${error.message}`, logType: 'error' });
     }
 }
 
@@ -326,5 +411,3 @@ function broadcastToMonitor(obj) {
         }
     });
 }
-
-
