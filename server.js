@@ -318,7 +318,7 @@ async function processCommand(ws) {
         const base64Audio = wavBuffer.toString('base64');
 
         const response = await ai.models.generateContent({
-            model: 'gemini-3.1-flash-lite',
+            model: 'gemini-2.5-flash',
             contents: [
                 { inlineData: { mimeType: 'audio/wav', data: base64Audio } },
                 { text: `Bạn là trợ lý nhà thông minh tiếng Việt. Phân tích đoạn âm thanh:\n- Nếu muốn BẬT đèn/led/thiết bị -> trả về led = 1 và text phản hồi.\n- Nếu muốn TẮT đèn/led/thiết bị -> trả về led = 0 và text phản hồi.\n- Các trường hợp khác hoặc không rõ ràng -> trả về led = -1.` }
